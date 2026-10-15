@@ -1,0 +1,104 @@
+const mongoose = require('mongoose');
+const Order = require('../models/Order');
+const Product = require('../models/Product');
+const Promotion = require('../models/Promotion');
+const { AppError } = require('../utils/errors');
+
+const SHIPPING_THRESHOLD = 500000;
+const SHIPPING_FEE = 30000;
+
+function calculateDiscount(promo, subtotal) {
+  if (!promo) return 0;
+  const raw = promo.discountType === 'percent' ? subtotal * promo.discountValue / 100 : promo.discountValue;
+  return Math.round(Math.min(subtotal, promo.maximumDiscount ? Math.min(raw, promo.maximumDiscount) : raw));
+}
+
+async function createOrder(userId, input) {
+  if (!Array.isArray(input.items) || !input.items.length) throw new AppError('Your order has no items', 400, 'EMPTY_ORDER');
+  if (input.items.length > 30) throw new AppError('An order can contain up to 30 variants', 400, 'ORDER_TOO_LARGE');
+  const shipping = input.shipping || {};
+  for (const key of ['recipient', 'phone', 'line1', 'district', 'city']) {
+    if (typeof shipping[key] !== 'string' || !shipping[key].trim()) throw new AppError(`Shipping ${key} is required`, 400, 'SHIPPING_REQUIRED');
+  }
+  if (!/^\+?[0-9\s()-]{8,20}$/.test(shipping.phone)) throw new AppError('Please enter a valid phone number', 400, 'INVALID_PHONE');
+  if (!['cod', 'online'].includes(input.paymentMethod || 'cod')) throw new AppError('Unsupported payment method', 400, 'INVALID_PAYMENT_METHOD');
+  const session = await mongoose.startSession();
+  let created;
+  try {
+    await session.withTransaction(async () => {
+      const orderItems = [];
+      let subtotal = 0;
+      for (const item of input.items) {
+        const quantity = Number(item.quantity);
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20) throw new AppError('Item quantity must be between 1 and 20', 400, 'INVALID_QUANTITY');
+        const product = await Product.findOne({ _id: item.productId, status: 'active' }).session(session);
+        if (!product) throw new AppError('A product is no longer available', 409, 'PRODUCT_UNAVAILABLE');
+        const variant = product.variants.id(item.variantId);
+        if (!variant || !variant.isActive || variant.quantity < quantity) throw new AppError(`${product.name} (${variant?.size || 'variant'}) is out of stock`, 409, 'INSUFFICIENT_STOCK');
+        const reserved = await Product.updateOne({ _id: product._id, status: 'active', variants: { $elemMatch: { _id: variant._id, isActive: true, quantity: { $gte: quantity } } } }, { $inc: { 'variants.$.quantity': -quantity } }, { session });
+        if (!reserved.modifiedCount) throw new AppError(`${product.name} is out of stock`, 409, 'INSUFFICIENT_STOCK');
+        const unitPrice = product.price;
+        subtotal += unitPrice * quantity;
+        orderItems.push({ product: product._id, variantId: variant._id, name: product.name, image: variant.images[0] || product.images[0] || '', size: variant.size, color: variant.color, quantity, unitPrice });
+      }
+      let promo = null;
+      const code = input.promotionCode?.trim().toUpperCase();
+      if (code) {
+        const now = new Date();
+        promo = await Promotion.findOne({ code, active: true, startsAt: { $lte: now }, endsAt: { $gte: now }, $or: [{ usageLimit: null }, { $expr: { $lt: ['$usedCount', '$usageLimit'] } }] }).session(session);
+        if (!promo) throw new AppError('Promotion code is invalid or expired', 400, 'PROMOTION_INVALID');
+        if (subtotal < promo.minimumOrder) throw new AppError(`Minimum order for this code is ${promo.minimumOrder}`, 400, 'PROMOTION_MINIMUM');
+        const consumed = await Promotion.updateOne({ _id: promo._id, active: true, $or: [{ usageLimit: null }, { $expr: { $lt: ['$usedCount', '$usageLimit'] } }] }, { $inc: { usedCount: 1 } }, { session });
+        if (!consumed.modifiedCount) throw new AppError('Promotion code has reached its usage limit', 409, 'PROMOTION_EXHAUSTED');
+      }
+      const discount = calculateDiscount(promo, subtotal);
+      const shippingFee = subtotal - discount >= SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
+      const total = subtotal - discount + shippingFee;
+      [created] = await Order.create([{
+        orderNumber: `FZ${Date.now().toString().slice(-8)}${Math.floor(Math.random() * 900 + 100)}`,
+        user: userId, items: orderItems, shipping: input.shipping, paymentMethod: input.paymentMethod || 'cod', paymentStatus: 'unpaid', subtotal, discount, shippingFee, total, promotionCode: code || '', status: 'pending'
+      }], { session });
+    }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
+    return created;
+  } finally { await session.endSession(); }
+}
+
+const nextStatuses = { pending: ['confirmed', 'cancelled'], confirmed: ['shipping', 'cancelled'], shipping: ['completed'], completed: [], cancelled: [] };
+
+async function cancelOrder(order, userId) {
+  if (userId !== 'admin' && order.user.toString() !== userId.toString()) throw new AppError('Order not found', 404, 'ORDER_NOT_FOUND');
+  if (!['pending', 'confirmed'].includes(order.status)) throw new AppError('This order can no longer be cancelled', 409, 'CANCEL_NOT_ALLOWED');
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      for (const item of order.items) {
+        await Product.updateOne({ _id: item.product, 'variants._id': item.variantId }, { $inc: { 'variants.$.quantity': item.quantity } }, { session });
+      }
+      if (order.promotionCode) await Promotion.updateOne({ code: order.promotionCode, usedCount: { $gt: 0 } }, { $inc: { usedCount: -1 } }, { session });
+      const updated = await Order.updateOne({ _id: order._id, status: { $in: ['pending', 'confirmed'] } }, { $set: { status: 'cancelled', cancelledAt: new Date() } }, { session });
+      if (!updated.modifiedCount) throw new AppError('This order can no longer be cancelled', 409, 'CANCEL_NOT_ALLOWED');
+    });
+    return Order.findById(order._id);
+  } finally { await session.endSession(); }
+}
+
+async function changeOrderStatus(order, status) {
+  if (!nextStatuses[order.status]?.includes(status)) throw new AppError(`Cannot change an order from ${order.status} to ${status}`, 409, 'INVALID_ORDER_TRANSITION');
+  if (status === 'cancelled') return cancelOrder(order, 'admin');
+  if (status === 'completed') {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const updated = await Order.updateOne({ _id: order._id, status: order.status }, { $set: { status, ...(order.paymentMethod === 'cod' ? { paymentStatus: 'paid' } : {}) } }, { session });
+        if (!updated.modifiedCount) throw new AppError('Order status changed; reload and try again', 409, 'ORDER_CHANGED');
+        for (const item of order.items) await Product.updateOne({ _id: item.product }, { $inc: { salesCount: item.quantity } }, { session });
+      });
+    } finally { await session.endSession(); }
+    return Order.findById(order._id);
+  }
+  const updated = await Order.findOneAndUpdate({ _id: order._id, status: order.status }, { $set: { status } }, { new: true });
+  if (!updated) throw new AppError('Order status changed; reload and try again', 409, 'ORDER_CHANGED');
+  return updated;
+}
+
+module.exports = { createOrder, cancelOrder, changeOrderStatus, calculateDiscount, nextStatuses, SHIPPING_FEE, SHIPPING_THRESHOLD };

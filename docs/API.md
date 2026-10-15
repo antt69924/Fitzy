@@ -1,0 +1,78 @@
+# FITZY API reference
+
+Base URL: `http://localhost:4000/api`. JSON responses use `{ "success": true, "data": ... }`; errors use `{ "success": false, "error": { "code", "message" } }`. Lists include `data.items` and `data.pagination` where applicable.
+
+## Authentication and access
+
+Public registration always creates `customer`. The API never exposes a public admin registration route. Obtain a token from login/register and send `Authorization: Bearer <token>`. Blocked accounts cannot authenticate or use protected routes. Admin paths also require `role=admin`; the owner of a customer resource is checked on orders, reviews, and favorites.
+
+| Method | Endpoint | Access | Purpose |
+|---|---|---|---|
+| GET | `/health` | Public | API health |
+| POST | `/auth/register` | Public, rate-limited by input | Create customer |
+| POST | `/auth/login` | Public, rate-limited | Login |
+| GET/PATCH | `/users/me` | Customer/admin | Read/update name, phone, addresses |
+| GET | `/categories` | Public | Active categories |
+| GET | `/products` | Public | Search/filter/sort/paginate active products |
+| GET | `/products/:idOrSlug` | Public | Product variants and visible reviews |
+| GET | `/posts` | Public | Published posts only |
+| GET | `/posts/:slug` | Public | Published post detail |
+| GET/POST/DELETE | `/favorites`, `/favorites/:productId` | Customer | List/add/remove own favorites |
+| POST/GET | `/orders` | Customer | Place order / list own orders |
+| GET | `/orders/:id` | Owner/admin | Read order detail |
+| POST | `/orders/:id/cancel` | Owner | Cancel eligible order and restore stock |
+| POST | `/products/:productId/reviews` | Owner, completed buyer | Add one review per product |
+| PATCH/DELETE | `/reviews/:id` | Review owner | Edit/delete own review |
+| POST | `/promotions/check` | Customer | Validate promotion against live catalog and stock |
+| POST | `/ai/stylist` | Customer, rate-limited | Gemini advice and database-matched products |
+| GET/PATCH | `/users`, `/users/:id`, `/users/:id/block` | Admin | Customer list, detail, block/unblock |
+| GET/PATCH | `/orders/admin/list`, `/orders/:id/status` | Admin | Filter orders / update valid status |
+| GET/PATCH | `/reviews/admin/list`, `/reviews/:id/moderate` | Admin | Review moderation |
+| GET | `/stats?range=day\|month\|year` | Admin | Revenue and store summary |
+| GET/POST/PATCH/DELETE | `/admin/categories` | Admin | Category CRUD (deletion blocked while referenced) |
+| GET/POST/PATCH/DELETE | `/admin/products` | Admin | Product and variant inventory CRUD |
+| GET/POST/PATCH/DELETE | `/admin/posts` | Admin | Post CRUD/publication |
+| GET/POST/PATCH/DELETE | `/admin/promotions` | Admin | Promotion CRUD |
+| POST | `/admin/uploads` | Admin | JPG/PNG/WebP upload, maximum 4 MB |
+
+Product list query parameters: `q`, `category` (id or slug), `minPrice`, `maxPrice`, `size`, `color`, `sort` (`newest`, `price_asc`, `price_desc`, `popular`), `page`, `limit`.
+
+## Place an order
+
+The client sends product and variant IDs plus quantity. It does not send prices, discount amount, shipping fee, or total. The server loads active product and variant records, validates stock and the promotion, calculates totals, reserves inventory, and writes the order in one transaction.
+
+```json
+{
+  "items": [{ "productId": "<mongo-id>", "variantId": "<variant-id>", "quantity": 1 }],
+  "promotionCode": "FITZY10",
+  "paymentMethod": "cod",
+  "shipping": {
+    "recipient": "Nguyen An",
+    "phone": "0912345678",
+    "line1": "12 Nguyen Hue",
+    "ward": "Ben Nghe",
+    "district": "District 1",
+    "city": "Ho Chi Minh City"
+  }
+}
+```
+
+Valid status flow: `pending → confirmed → shipping → completed`; `pending` and `confirmed` can transition to `cancelled`. A cancellation restores inventory and frees one promotion use in the same transaction. COD is marked paid at completion. Revenue reports include only completed orders.
+
+## Validation and error cases
+
+- `400 VALIDATION_ERROR`, `400 INVALID_QUANTITY`, `400 SHIPPING_REQUIRED`, `400 PROMOTION_INVALID`
+- `401 AUTH_REQUIRED`, `401 AUTH_EXPIRED`, `401 INVALID_CREDENTIALS`
+- `403 ADMIN_REQUIRED`, `403 ACCOUNT_BLOCKED`, `403 REVIEW_NOT_ALLOWED`
+- `404 NOT_FOUND`, `404 ORDER_NOT_FOUND`
+- `409 EMAIL_IN_USE`, `409 INSUFFICIENT_STOCK`, `409 CANCEL_NOT_ALLOWED`, `409 INVALID_ORDER_TRANSITION`, `409 CATEGORY_IN_USE`
+- Lists cap `limit` by resource. The server only returns published posts and active products/categories on public routes.
+
+## Postman smoke sequence
+
+1. `POST /auth/register` with a new customer and store `data.token`.
+2. `GET /products?limit=12&sort=popular`, select a product and an available variant.
+3. `POST /promotions/check` with `code` and `items` to preview the server-calculated discount.
+4. `POST /orders` with the shipping payload above, then `GET /orders`.
+5. Sign in at `/auth/login` with the seeded admin, replace the Bearer token, then call `/stats` and `/orders/admin/list`.
+6. Attempt `/admin/products` with the customer token; it should return 403.
