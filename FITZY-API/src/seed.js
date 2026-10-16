@@ -12,7 +12,10 @@ async function seed() {
   const email = (process.env.SEED_ADMIN_EMAIL || 'admin@fitzy.local').toLowerCase();
   const password = process.env.SEED_ADMIN_PASSWORD;
   if (!password || password.length < 12) throw new Error('Set SEED_ADMIN_PASSWORD to a unique password of at least 12 characters before seeding.');
-  await User.updateOne({ email }, { $set: { name: 'FITZY Demo Admin', role: 'admin', passwordHash: await bcrypt.hash(password, 12), isBlocked: false } }, { upsert: true });
+  await User.updateOne({ email }, {
+    $set: { role: 'admin', isBlocked: false },
+    $setOnInsert: { name: 'FITZY Admin', passwordHash: await bcrypt.hash(password, 12) }
+  }, { upsert: true });
   const categories = await Promise.all([
     { name: 'Áo', slug: 'ao', description: 'Áo thiết kế demo FITZY', status: 'active' },
     { name: 'Quần', slug: 'quan', description: 'Quần thiết kế demo FITZY', status: 'active' },
@@ -27,7 +30,7 @@ async function seed() {
   for (const product of catalog) await Product.findOneAndUpdate({ slug: product.slug }, { $setOnInsert: product }, { upsert: true, new: true });
   await Post.findOneAndUpdate({ slug: 'phoi-do-toi-gian-moi-ngay' }, { $setOnInsert: { title: 'Phối đồ tối giản mỗi ngày', slug: 'phoi-do-toi-gian-moi-ngay', excerpt: 'Một vài nguyên tắc để tạo tủ đồ linh hoạt.', content: 'Bài viết minh họa được tạo từ seed FITZY. Hãy ưu tiên phom dáng phù hợp, phối bảng màu trung tính và chọn trang phục theo hoàn cảnh sử dụng.', image: '', status: 'published', publishedAt: new Date() } }, { upsert: true });
   await Promotion.findOneAndUpdate({ code: 'FITZY10' }, { $setOnInsert: { code: 'FITZY10', discountType: 'percent', discountValue: 10, minimumOrder: 300000, maximumDiscount: 100000, startsAt: new Date(Date.now() - 86400000), endsAt: new Date(Date.now() + 365 * 86400000), usageLimit: 100, active: true } }, { upsert: true });
-  console.log(`Demo data ready. Admin email: ${email}. Password is read from SEED_ADMIN_PASSWORD.`);
+  console.log(`Demo data ready. Admin email: ${email}.`);
 }
 
 seed().then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1); });

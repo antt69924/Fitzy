@@ -5,6 +5,7 @@ build/
 .env
 .env.*
 !.env.example
+FITZY-API/firebase-service-account.json
 coverage/
 FITZY-API/uploads/*
 !FITZY-API/uploads/.gitkeep

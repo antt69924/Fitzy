@@ -8,7 +8,7 @@
     "userInterfaceStyle": "light",
     "splash": { "backgroundColor": "#f4f2ee" },
     "ios": { "supportsTablet": true, "bundleIdentifier": "com.fitzy.store" },
-    "android": { "package": "com.fitzy.store", "adaptiveIcon": { "backgroundColor": "#f4f2ee" } },
+    "android": { "package": "com.fitzy.store", "googleServicesFile": "./google-services.json", "adaptiveIcon": { "backgroundColor": "#f4f2ee" } },
     "plugins": [["expo-image-picker", { "photosPermission": "Cho phép FITZY chọn ảnh để tải hình sản phẩm lên cửa hàng.", "cameraPermission": false, "microphonePermission": false }]]
   }
 }

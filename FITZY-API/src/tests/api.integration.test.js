@@ -8,6 +8,7 @@ process.env.JWT_SECRET = 'integration-test-secret-that-is-long-enough';
 process.env.CLIENT_ORIGINS = 'http://localhost:5173';
 process.env.GEMINI_API_KEY = '';
 let replicaSet; let app; let customerToken; let product; let variant; let adminUser; let placedOrder;
+const { syncFirebaseUser } = require('../services/authService');
 
 test.before(async () => {
   replicaSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
@@ -32,6 +33,41 @@ test('auth validates registration, login, and rejects invalid credentials', asyn
   const login = await request(app).post('/api/auth/login').send({ email: 'buyer@test.fitzy', password: 'secure-pass-123' });
   assert.equal(login.status, 200);
   assert.equal((await request(app).post('/api/auth/login').send({ email: 'buyer@test.fitzy', password: 'wrong-password' })).status, 401);
+});
+
+test('Firebase sync creates a customer profile once and does not expose Firebase identifiers', async () => {
+  const claims = { uid: 'firebase-new-customer', email: 'firebase-buyer@test.fitzy', email_verified: false, name: 'Firebase Buyer' };
+  const first = await syncFirebaseUser(claims);
+  const repeated = await syncFirebaseUser(claims);
+  assert.equal(first.id, repeated.id);
+  assert.equal(first.role, 'customer');
+  assert.equal(first.email, claims.email);
+  assert.equal(first.toJSON().firebaseUid, undefined);
+  assert.equal(first.toJSON().passwordHash, undefined);
+  assert.equal(await mongoose.model('User').countDocuments({ email: claims.email }), 1);
+});
+
+test('Firebase sync links a verified existing admin without changing its role', async () => {
+  await syncFirebaseUser({ uid: 'firebase-existing-admin', email: adminUser.email, email_verified: true }, 'Linked Admin');
+  const linked = await mongoose.model('User').findById(adminUser.id).select('+firebaseUid +passwordHash');
+  assert.equal(linked.firebaseUid, 'firebase-existing-admin');
+  assert.equal(linked.role, 'admin');
+  assert.equal(linked.passwordHash, 'not-a-login-hash');
+});
+
+test('Firebase sync requires verified email before linking and rejects conflicting identities', async () => {
+  const User = mongoose.model('User');
+  const legacy = await User.create({ name: 'Legacy Buyer', email: 'legacy-buyer@test.fitzy', passwordHash: 'legacy-hash', role: 'customer' });
+  await assert.rejects(
+    syncFirebaseUser({ uid: 'firebase-unverified-legacy', email: legacy.email, email_verified: false }),
+    error => error.code === 'EMAIL_VERIFICATION_REQUIRED'
+  );
+  const untouched = await User.findById(legacy.id).select('+firebaseUid');
+  assert.equal(untouched.firebaseUid, undefined);
+  await assert.rejects(
+    syncFirebaseUser({ uid: 'firebase-other-admin', email: adminUser.email, email_verified: true }),
+    error => error.code === 'FIREBASE_ACCOUNT_CONFLICT'
+  );
 });
 
 test('product listing is public, filterable, and paginated', async () => {

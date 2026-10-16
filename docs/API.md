@@ -11,6 +11,7 @@ Public registration always creates `customer`. The API never exposes a public ad
 | GET | `/health` | Public | API health |
 | POST | `/auth/register` | Public, rate-limited by input | Create customer |
 | POST | `/auth/login` | Public, rate-limited | Login |
+| POST | `/auth/firebase/exchange` | Public, rate-limited | Verify Firebase ID token, create/link MongoDB profile, return FITZY API JWT |
 | GET/PATCH | `/users/me` | Customer/admin | Read/update name, phone, addresses |
 | GET | `/categories` | Public | Active categories |
 | GET | `/products` | Public | Search/filter/sort/paginate active products |
@@ -66,6 +67,7 @@ Valid status flow: `pending → confirmed → shipping → completed`; `pending`
 - `403 ADMIN_REQUIRED`, `403 ACCOUNT_BLOCKED`, `403 REVIEW_NOT_ALLOWED`
 - `404 NOT_FOUND`, `404 ORDER_NOT_FOUND`
 - `409 EMAIL_IN_USE`, `409 INSUFFICIENT_STOCK`, `409 CANCEL_NOT_ALLOWED`, `409 INVALID_ORDER_TRANSITION`, `409 CATEGORY_IN_USE`
+- Firebase exchange also returns `503 FIREBASE_NOT_CONFIGURED` when API Admin credentials are not configured, and `409 EMAIL_VERIFICATION_REQUIRED` before linking a Firebase account to an existing FITZY profile.
 - Lists cap `limit` by resource. The server only returns published posts and active products/categories on public routes.
 
 ## Postman smoke sequence

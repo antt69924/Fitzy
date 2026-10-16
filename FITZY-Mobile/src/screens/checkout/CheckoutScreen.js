@@ -1,16 +1,22 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Text, View } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import { placeOrder } from '../../store/slices/orderSlice';
 import { clearCart } from '../../store/slices/cartSlice';
-import { Button, Field, Page, SectionTitle } from '../../components/ui';
+import { Button, Field, Page, SectionTitle, StateMessage } from '../../components/ui';
 import { theme, formatVnd } from '../../constants/theme';
 
 export default function CheckoutScreen({ navigation }) {
   const dispatch = useDispatch(); const items = useSelector(state => state.cart.items.filter(item => item.selected)); const promotion = useSelector(state => state.cart.selectedPromotion); const busy = useSelector(state => state.orders.status === 'loading'); const error = useSelector(state => state.orders.error); const user = useSelector(state => state.auth.user);
   const address = user?.addresses?.find(item => item.isDefault) || user?.addresses?.[0] || {};
   const [recipient, setRecipient] = useState(address.recipient || user?.name || ''); const [phone, setPhone] = useState(address.phone || user?.phone || ''); const [line1, setLine1] = useState(address.line1 || ''); const [ward, setWard] = useState(address.ward || ''); const [district, setDistrict] = useState(address.district || ''); const [city, setCity] = useState(address.city || '');
+  useEffect(() => {
+    const savedAddress = user?.addresses?.find(item => item.isDefault) || user?.addresses?.[0] || {};
+    setRecipient(savedAddress.recipient || user?.name || ''); setPhone(savedAddress.phone || user?.phone || '');
+    setLine1(savedAddress.line1 || ''); setWard(savedAddress.ward || ''); setDistrict(savedAddress.district || ''); setCity(savedAddress.city || '');
+  }, [user?._id]);
   const subtotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0); const discount = promotion?.discount || 0; const shippingFee = subtotal - discount >= 500000 ? 0 : 30000;
+  if (!user) return <Page><StateMessage title="Đăng nhập để thanh toán" message="Đơn hàng sẽ được liên kết với tài khoản của bạn." action="Đăng nhập" onAction={() => navigation.navigate('Auth')} /></Page>;
   const submit = async () => {
     const result = await dispatch(placeOrder({ items: items.map(item => ({ productId: item.productId, variantId: item.variantId, quantity: item.quantity })), promotionCode: promotion?.code, paymentMethod: 'cod', shipping: { recipient: recipient.trim(), phone: phone.trim(), line1: line1.trim(), ward: ward.trim(), district: district.trim(), city: city.trim() } }));
     if (placeOrder.fulfilled.match(result)) { dispatch(clearCart()); Alert.alert('Đặt hàng thành công', `Mã đơn ${result.payload.orderNumber}`); navigation.replace('Orders'); }

@@ -10,13 +10,18 @@ export const tokenStore = {
 
 const api = axios.create({ baseURL, timeout: 15000, headers: { 'Content-Type': 'application/json' } });
 api.interceptors.request.use(async config => {
-  const token = await tokenStore.get();
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (!config.skipAuth) {
+    const token = await tokenStore.get();
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+  }
   return config;
 });
 api.interceptors.response.use(response => response, async error => {
   if (error.response?.status === 401) await tokenStore.clear();
-  return Promise.reject(new Error(error.response?.data?.error?.message || error.response?.data?.message || error.message || 'Không thể kết nối máy chủ'));
+  const apiError = new Error(error.response?.data?.error?.message || error.response?.data?.message || error.message || 'Không thể kết nối máy chủ');
+  apiError.code = error.response?.data?.error?.code;
+  apiError.status = error.response?.status;
+  return Promise.reject(apiError);
 });
 
 export default api;
