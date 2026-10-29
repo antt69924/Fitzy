@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, Text, View } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import { placeOrder } from '../../store/slices/orderSlice';
 import { clearCart } from '../../store/slices/cartSlice';
@@ -28,11 +28,18 @@ export default function CheckoutScreen({ navigation }) {
     setFormError('');
     const result = await dispatch(placeOrder({ items: items.map(item => ({ productId: item.productId, variantId: item.variantId, quantity: item.quantity })), promotionCode: promotion?.code, paymentMethod, shipping }));
     if (placeOrder.fulfilled.match(result)) {
+      const order = result.payload.order;
       dispatch(clearCart());
+      if (result.payload.paymentUrl) {
+        navigation.replace('Orders');
+        try { await Linking.openURL(result.payload.paymentUrl); }
+        catch { Alert.alert('Đã tạo đơn hàng', `Không thể mở cổng thanh toán. Mã đơn ${order.orderNumber} vẫn được lưu trong Đơn hàng.`); }
+        return;
+      }
       const transfer = paymentMethods.find(method => method.id === paymentMethod)?.bankAccount;
       const message = paymentMethod === 'bank_transfer' && transfer
-        ? `Mã đơn: ${result.payload.orderNumber}\nNgân hàng: ${transfer.bankName}\nSố tài khoản: ${transfer.accountNumber}\nChủ tài khoản: ${transfer.accountName}${transfer.branch ? `\nChi nhánh: ${transfer.branch}` : ''}\nSố tiền: ${formatVnd(result.payload.total)}\nNội dung: ${result.payload.orderNumber}\n\nĐơn sẽ được xác nhận sau khi cửa hàng kiểm tra giao dịch.`
-        : `Mã đơn ${result.payload.orderNumber}. Thanh toán khi nhận hàng.`;
+        ? `Mã đơn: ${order.orderNumber}\nNgân hàng: ${transfer.bankName}\nSố tài khoản: ${transfer.accountNumber}\nChủ tài khoản: ${transfer.accountName}${transfer.branch ? `\nChi nhánh: ${transfer.branch}` : ''}\nSố tiền: ${formatVnd(order.total)}\nNội dung: ${order.orderNumber}\n\nĐơn sẽ được xác nhận sau khi cửa hàng kiểm tra giao dịch.`
+        : `Mã đơn ${order.orderNumber}. Thanh toán khi nhận hàng.`;
       Alert.alert(paymentMethod === 'bank_transfer' ? 'Đặt hàng thành công · Chuyển khoản' : 'Đặt hàng thành công', message, [{ text: 'Đã hiểu', onPress: () => navigation.replace('Orders') }]);
     }
   };

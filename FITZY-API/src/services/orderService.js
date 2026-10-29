@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Promotion = require('../models/Promotion');
 const { AppError } = require('../utils/errors');
+const { enabledProviders } = require('./paymentGatewayService');
 
 const SHIPPING_THRESHOLD = 500000;
 const SHIPPING_FEE = 30000;
@@ -22,8 +23,9 @@ async function createOrder(userId, input) {
   }
   if (!/^\+?[0-9\s()-]{8,20}$/.test(shipping.phone)) throw new AppError('Please enter a valid phone number', 400, 'INVALID_PHONE');
   const paymentMethod = input.paymentMethod || 'cod';
-  if (!['cod', 'bank_transfer'].includes(paymentMethod)) throw new AppError('Unsupported payment method', 400, 'INVALID_PAYMENT_METHOD');
+  if (!['cod', 'bank_transfer', 'momo', 'zalopay', 'vnpay'].includes(paymentMethod)) throw new AppError('Unsupported payment method', 400, 'INVALID_PAYMENT_METHOD');
   if (paymentMethod === 'bank_transfer' && !getBankTransferDetails()) throw new AppError('Bank transfer is not configured', 503, 'PAYMENT_METHOD_UNAVAILABLE');
+  if (['momo', 'zalopay', 'vnpay'].includes(paymentMethod) && !enabledProviders().some(method => method.id === paymentMethod)) throw new AppError('Payment gateway is not configured', 503, 'PAYMENT_METHOD_UNAVAILABLE');
   const session = await mongoose.startSession();
   let created;
   try {
@@ -58,7 +60,7 @@ async function createOrder(userId, input) {
       const total = subtotal - discount + shippingFee;
       [created] = await Order.create([{
         orderNumber: `FZ${Date.now().toString().slice(-8)}${Math.floor(Math.random() * 900 + 100)}`,
-        user: userId, items: orderItems, shipping: input.shipping, paymentMethod, paymentStatus: 'unpaid', subtotal, discount, shippingFee, total, promotionCode: code || '', status: 'pending'
+        user: userId, items: orderItems, shipping: input.shipping, paymentMethod, paymentStatus: ['momo', 'zalopay', 'vnpay'].includes(paymentMethod) ? 'pending' : 'unpaid', paymentExpiresAt: ['momo', 'zalopay', 'vnpay'].includes(paymentMethod) ? new Date(Date.now() + 15 * 60 * 1000) : undefined, subtotal, discount, shippingFee, total, promotionCode: code || '', status: 'pending'
       }], { session });
     }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } });
     return created;
@@ -78,7 +80,7 @@ const nextStatuses = { pending: ['confirmed', 'cancelled'], confirmed: ['shippin
 async function cancelOrder(order, userId) {
   if (userId !== 'admin' && order.user.toString() !== userId.toString()) throw new AppError('Order not found', 404, 'ORDER_NOT_FOUND');
   if (!['pending', 'confirmed'].includes(order.status)) throw new AppError('This order can no longer be cancelled', 409, 'CANCEL_NOT_ALLOWED');
-  if (order.paymentMethod === 'bank_transfer' && order.paymentStatus === 'paid') throw new AppError('Refund the bank transfer before cancelling this order', 409, 'REFUND_REQUIRED');
+  if (['bank_transfer', 'momo', 'zalopay', 'vnpay'].includes(order.paymentMethod) && order.paymentStatus === 'paid') throw new AppError('Refund the payment before cancelling this order', 409, 'REFUND_REQUIRED');
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -93,10 +95,29 @@ async function cancelOrder(order, userId) {
   } finally { await session.endSession(); }
 }
 
+async function expirePendingPaymentOrders(now = new Date()) {
+  const session = await mongoose.startSession();
+  let expiredCount = 0;
+  try {
+    await session.withTransaction(async () => {
+      const candidates = await Order.find({ status: { $in: ['pending', 'confirmed'] }, paymentStatus: { $in: ['pending', 'failed'] }, paymentMethod: { $in: ['momo', 'zalopay', 'vnpay'] }, paymentExpiresAt: { $lte: now } }).session(session);
+      for (const order of candidates) {
+        const updated = await Order.updateOne({ _id: order._id, status: { $in: ['pending', 'confirmed'] }, paymentStatus: { $in: ['pending', 'failed'] }, paymentExpiresAt: { $lte: now } }, { $set: { status: 'cancelled', paymentStatus: 'expired', cancelledAt: now, paymentUrl: '' } }, { session });
+        if (!updated.modifiedCount) continue;
+        expiredCount += 1;
+        for (const item of order.items) await Product.updateOne({ _id: item.product, 'variants._id': item.variantId }, { $inc: { 'variants.$.quantity': item.quantity } }, { session });
+        if (order.promotionCode) await Promotion.updateOne({ code: order.promotionCode, usedCount: { $gt: 0 } }, { $inc: { usedCount: -1 } }, { session });
+      }
+    });
+    return expiredCount;
+  } finally { await session.endSession(); }
+}
+
 async function changeOrderStatus(order, status) {
   if (!nextStatuses[order.status]?.includes(status)) throw new AppError(`Cannot change an order from ${order.status} to ${status}`, 409, 'INVALID_ORDER_TRANSITION');
   if (status === 'cancelled') return cancelOrder(order, 'admin');
   if (status === 'completed') {
+    if (order.paymentMethod !== 'cod' && order.paymentStatus !== 'paid') throw new AppError('Payment must be confirmed before completing this order', 409, 'PAYMENT_REQUIRED');
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
@@ -112,4 +133,4 @@ async function changeOrderStatus(order, status) {
   return updated;
 }
 
-module.exports = { createOrder, cancelOrder, changeOrderStatus, calculateDiscount, nextStatuses, getBankTransferDetails, SHIPPING_FEE, SHIPPING_THRESHOLD };
+module.exports = { createOrder, cancelOrder, changeOrderStatus, expirePendingPaymentOrders, calculateDiscount, nextStatuses, getBankTransferDetails, SHIPPING_FEE, SHIPPING_THRESHOLD };

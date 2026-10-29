@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const request = require('supertest');
 const { MongoMemoryReplSet } = require('mongodb-memory-server');
@@ -10,6 +11,9 @@ process.env.GEMINI_API_KEY = '';
 process.env.BANK_TRANSFER_BANK_NAME = 'Test Bank';
 process.env.BANK_TRANSFER_ACCOUNT_NAME = 'FITZY TEST';
 process.env.BANK_TRANSFER_ACCOUNT_NUMBER = '1234567890';
+process.env.MOMO_PARTNER_CODE = 'MOMO_TEST'; process.env.MOMO_ACCESS_KEY = 'momo-access-test'; process.env.MOMO_SECRET_KEY = 'momo-secret-test'; process.env.MOMO_IPN_URL = 'https://fitzy.example/api/payments/ipn/momo'; process.env.MOMO_REDIRECT_URL = 'fitzy://payment-result';
+process.env.ZALOPAY_APP_ID = '2553'; process.env.ZALOPAY_KEY1 = 'zalo-key1-test'; process.env.ZALOPAY_KEY2 = 'zalo-key2-test'; process.env.ZALOPAY_CALLBACK_URL = 'https://fitzy.example/api/payments/ipn/zalopay'; process.env.ZALOPAY_REDIRECT_URL = 'fitzy://payment-result';
+process.env.VNPAY_TMN_CODE = 'FITZYTEST'; process.env.VNPAY_HASH_SECRET = 'vnpay-secret-test'; process.env.VNPAY_RETURN_URL = 'https://fitzy.example/api/payments/return/vnpay'; process.env.VNPAY_IPN_URL = 'https://fitzy.example/api/payments/ipn/vnpay';
 let replicaSet; let app; let customerToken; let product; let variant; let adminUser; let placedOrder;
 const { syncFirebaseUser } = require('../services/authService');
 
@@ -130,7 +134,7 @@ test('order ownership is enforced and cancellation restores stock', async () => 
 test('bank transfer is listed when configured and can be confirmed by an admin', async () => {
   const methods = await request(app).get('/api/payments/methods');
   assert.equal(methods.status, 200);
-  assert.deepEqual(methods.body.data.methods.map(method => method.id), ['cod', 'bank_transfer']);
+  assert.deepEqual(methods.body.data.methods.map(method => method.id), ['cod', 'bank_transfer', 'momo', 'zalopay', 'vnpay']);
   assert.equal(methods.body.data.methods[1].bankAccount.accountNumber, '1234567890');
   const placed = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
     items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'bank_transfer',
@@ -152,6 +156,131 @@ test('bank transfer is listed when configured and can be confirmed by an admin',
   const cancelled = await request(app).post(`/api/orders/${placed.body.data.order._id}/cancel`).set('Authorization', `Bearer ${customerToken}`);
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.body.data.order.status, 'cancelled');
+});
+
+test('MoMo checkout uses a signed provider request and accepts a signed IPN', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, options) => {
+    const sent = JSON.parse(options.body);
+    assert.equal(sent.partnerCode, 'MOMO_TEST');
+    assert.ok(sent.signature);
+    return { ok: true, status: 200, json: async () => ({ resultCode: 0, payUrl: 'https://test-payment.momo.vn/pay/mock', transId: 89001 }) };
+  };
+  let placed;
+  try {
+    placed = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+      items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'momo',
+      shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+    });
+  } finally { global.fetch = originalFetch; }
+  assert.equal(placed.status, 201);
+  assert.equal(placed.body.data.paymentUrl, 'https://test-payment.momo.vn/pay/mock');
+  const order = placed.body.data.order;
+  const callback = { accessKey: process.env.MOMO_ACCESS_KEY, amount: order.total, extraData: '', message: 'Success', orderId: order.orderNumber, orderInfo: `Thanh toan don ${order.orderNumber}`, orderType: 'momo_wallet', partnerCode: process.env.MOMO_PARTNER_CODE, payType: 'webApp', requestId: order.providerTransactionId, responseTime: 1760000000000, resultCode: 0, transId: 89001 };
+  const signData = ['accessKey', 'amount', 'extraData', 'message', 'orderId', 'orderInfo', 'orderType', 'partnerCode', 'payType', 'requestId', 'responseTime', 'resultCode', 'transId'].map(key => `${key}=${callback[key]}`).join('&');
+  callback.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(signData).digest('hex');
+  const badAmount = { ...callback, amount: order.total + 1 };
+  const badSignData = ['accessKey', 'amount', 'extraData', 'message', 'orderId', 'orderInfo', 'orderType', 'partnerCode', 'payType', 'requestId', 'responseTime', 'resultCode', 'transId'].map(key => `${key}=${badAmount[key]}`).join('&');
+  badAmount.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(badSignData).digest('hex');
+  assert.equal((await request(app).post('/api/payments/ipn/momo').send(badAmount)).body.resultCode, 1);
+  assert.equal((await mongoose.model('Order').findById(order._id)).paymentStatus, 'pending');
+  const notified = await request(app).post('/api/payments/ipn/momo').send(callback);
+  assert.equal(notified.body.resultCode, 0);
+  const duplicate = await request(app).post('/api/payments/ipn/momo').send(callback);
+  assert.equal(duplicate.body.resultCode, 0);
+  assert.equal((await mongoose.model('Order').findById(order._id)).paymentStatus, 'paid');
+  const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const refunded = await request(app).patch(`/api/orders/${order._id}/payment/refund`).set('Authorization', `Bearer ${adminToken}`);
+  assert.equal(refunded.body.data.order.paymentStatus, 'refunded');
+  assert.equal((await request(app).patch(`/api/orders/${order._id}/payment/refund`).set('Authorization', `Bearer ${adminToken}`)).status, 409);
+  const cancelled = await request(app).post(`/api/orders/${order._id}/cancel`).set('Authorization', `Bearer ${customerToken}`);
+  assert.equal(cancelled.body.data.order.status, 'cancelled');
+});
+
+test('unpaid orders cannot be refunded; expired online payments release reserved stock and reject late success', async () => {
+  const Order = mongoose.model('Order');
+  const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const unpaid = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+    items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'bank_transfer',
+    shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+  });
+  assert.equal((await request(app).patch(`/api/orders/${unpaid.body.data.order._id}/payment/refund`).set('Authorization', `Bearer ${adminToken}`)).status, 409);
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ resultCode: 0, payUrl: 'https://test-payment.momo.vn/pay/expiry', transId: 99001 }) });
+  let placed;
+  try {
+    placed = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+      items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'momo',
+      shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+    });
+  } finally { global.fetch = originalFetch; }
+  assert.equal(placed.status, 201);
+  const order = await Order.findById(placed.body.data.order._id);
+  const reservedQuantity = (await mongoose.model('Product').findById(product.id)).variants.id(variant.id).quantity;
+  assert.ok(order.paymentExpiresAt instanceof Date);
+  order.paymentExpiresAt = new Date(Date.now() - 1000);
+  await order.save();
+  const expiredCount = await require('../services/orderService').expirePendingPaymentOrders();
+  assert.equal(expiredCount, 1);
+  const expired = await Order.findById(order._id);
+  assert.equal(expired.status, 'cancelled');
+  assert.equal(expired.paymentStatus, 'expired');
+  const inventory = await mongoose.model('Product').findById(product.id);
+  assert.equal(inventory.variants.id(variant.id).quantity, reservedQuantity + 1);
+  const lateCallback = {
+    accessKey: process.env.MOMO_ACCESS_KEY, amount: expired.total, extraData: '', message: 'Success', orderId: expired.orderNumber,
+    orderInfo: `Thanh toan don ${expired.orderNumber}`, orderType: 'momo_wallet', partnerCode: process.env.MOMO_PARTNER_CODE, payType: 'webApp',
+    requestId: expired.providerTransactionId, responseTime: Date.now(), resultCode: 0, transId: 99001
+  };
+  const lateSignData = ['accessKey', 'amount', 'extraData', 'message', 'orderId', 'orderInfo', 'orderType', 'partnerCode', 'payType', 'requestId', 'responseTime', 'resultCode', 'transId'].map(key => `${key}=${lateCallback[key]}`).join('&');
+  lateCallback.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(lateSignData).digest('hex');
+  const latePayment = await require('../services/paymentGatewayService').processMomoCallback(lateCallback);
+  assert.equal(latePayment.ok, false);
+  assert.equal(latePayment.reason, 'ORDER_EXPIRED');
+});
+
+test('ZaloPay and VNPay create signed payments and verify signed callbacks', async () => {
+  const Order = mongoose.model('Order');
+  const originalFetch = global.fetch;
+  global.fetch = async (_url, options) => {
+    const sent = JSON.parse(options.body);
+    const sign = `${sent.app_id}|${sent.app_trans_id}|${sent.app_user}|${sent.amount}|${sent.app_time}|${sent.embed_data}|${sent.item}`;
+    assert.equal(sent.mac, crypto.createHmac('sha256', process.env.ZALOPAY_KEY1).update(sign).digest('hex'));
+    return { ok: true, status: 200, json: async () => ({ return_code: 1, order_url: 'https://qcgateway.zalopay.vn/openinapp?mock=1' }) };
+  };
+  let zaloPlaced;
+  try {
+    zaloPlaced = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+      items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'zalopay',
+      shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+    });
+  } finally { global.fetch = originalFetch; }
+  assert.equal(zaloPlaced.status, 201);
+  assert.equal(zaloPlaced.body.data.paymentUrl, 'https://qcgateway.zalopay.vn/openinapp?mock=1');
+  const zaloOrder = zaloPlaced.body.data.order;
+  const zaloData = JSON.stringify({ app_id: 2553, app_trans_id: zaloOrder.providerTransactionId, amount: zaloOrder.total, zp_trans_id: 77701 });
+  const zaloMac = crypto.createHmac('sha256', process.env.ZALOPAY_KEY2).update(zaloData).digest('hex');
+  const zaloCallback = await request(app).post('/api/payments/ipn/zalopay').send({ data: zaloData, mac: zaloMac, type: 1 });
+  assert.equal(zaloCallback.body.return_code, 1);
+  assert.equal((await Order.findById(zaloOrder._id)).paymentStatus, 'paid');
+
+  const vnPlaced = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+    items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'vnpay',
+    shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+  });
+  assert.equal(vnPlaced.status, 201);
+  const vnOrder = vnPlaced.body.data.order;
+  const params = Object.fromEntries(new URL(vnPlaced.body.data.paymentUrl).searchParams.entries());
+  params.vnp_ResponseCode = '00'; params.vnp_TransactionStatus = '00'; params.vnp_TransactionNo = '88002';
+  const unsigned = Object.fromEntries(Object.entries(params).filter(([key]) => !['vnp_SecureHash', 'vnp_SecureHashType'].includes(key)).sort(([a], [b]) => a.localeCompare(b)));
+  params.vnp_SecureHash = crypto.createHmac('sha512', process.env.VNPAY_HASH_SECRET).update(require('node:querystring').stringify(unsigned, undefined, undefined, { encodeURIComponent: value => value })).digest('hex');
+  const vnCallback = await request(app).get('/api/payments/ipn/vnpay').query(params);
+  assert.equal(vnCallback.body.RspCode, '00');
+  assert.equal((await Order.findById(vnOrder._id)).paymentStatus, 'paid');
+  const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  assert.equal((await request(app).patch(`/api/orders/${vnOrder._id}/payment/refund`).set('Authorization', `Bearer ${adminToken}`)).status, 200);
+  assert.equal((await request(app).post(`/api/orders/${vnOrder._id}/cancel`).set('Authorization', `Bearer ${customerToken}`)).status, 200);
 });
 
 test('only valid order transitions complete sales and permit verified reviews', async () => {
