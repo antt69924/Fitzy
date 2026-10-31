@@ -111,6 +111,7 @@ test('promotions are calculated on server and order creation reserves inventory'
   assert.equal(placed.body.data.order.subtotal, 100000);
   assert.equal(placed.body.data.order.total, 120000);
   placedOrder = placed.body.data.order;
+  assert.deepEqual(placedOrder.statusHistory.map(event => event.status), ['pending']);
   const refreshed = await mongoose.model('Product').findById(product.id);
   assert.equal(refreshed.variants.id(variant.id).quantity, 4);
   const overstock = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({ items: [{ productId: product.id, variantId: variant.id, quantity: 5 }], shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' } });
@@ -124,6 +125,12 @@ test('order ownership is enforced and cancellation restores stock', async () => 
   assert.equal(placed.status, 201);
   const forbiddenRead = await request(app).get(`/api/orders/${placed.body.data.order._id}`).set('Authorization', `Bearer ${otherToken}`);
   assert.equal(forbiddenRead.status, 404);
+  const otherOrders = await request(app).get('/api/orders').set('Authorization', `Bearer ${otherToken}`);
+  assert.equal(otherOrders.status, 200);
+  assert.equal(otherOrders.body.data.items.some(order => order._id === placed.body.data.order._id), false);
+  const ownerDetail = await request(app).get(`/api/orders/${placed.body.data.order._id}`).set('Authorization', `Bearer ${customerToken}`);
+  assert.equal(ownerDetail.status, 200);
+  assert.equal(ownerDetail.body.data.order.user.email, 'buyer@test.fitzy');
   const cancelled = await request(app).post(`/api/orders/${placed.body.data.order._id}/cancel`).set('Authorization', `Bearer ${customerToken}`);
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.body.data.order.status, 'cancelled');
@@ -156,6 +163,8 @@ test('bank transfer is listed when configured and can be confirmed by an admin',
   const cancelled = await request(app).post(`/api/orders/${placed.body.data.order._id}/cancel`).set('Authorization', `Bearer ${customerToken}`);
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.body.data.order.status, 'cancelled');
+  assert.equal(cancelled.body.data.order.statusHistory.at(-1).status, 'cancelled');
+  assert.equal((await request(app).post(`/api/orders/${placed.body.data.order._id}/cancel`).set('Authorization', `Bearer ${customerToken}`)).status, 409);
 });
 
 test('MoMo checkout uses a signed provider request and accepts a signed IPN', async () => {
@@ -184,6 +193,14 @@ test('MoMo checkout uses a signed provider request and accepts a signed IPN', as
   badAmount.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(badSignData).digest('hex');
   assert.equal((await request(app).post('/api/payments/ipn/momo').send(badAmount)).body.resultCode, 1);
   assert.equal((await mongoose.model('Order').findById(order._id)).paymentStatus, 'pending');
+  const failedCallback = { ...callback, message: 'Payment failed', resultCode: 1 };
+  const failedSignData = ['accessKey', 'amount', 'extraData', 'message', 'orderId', 'orderInfo', 'orderType', 'partnerCode', 'payType', 'requestId', 'responseTime', 'resultCode', 'transId'].map(key => `${key}=${failedCallback[key]}`).join('&');
+  failedCallback.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(failedSignData).digest('hex');
+  const failedPayment = await request(app).post('/api/payments/ipn/momo').send(failedCallback);
+  assert.equal(failedPayment.body.resultCode, 0);
+  const failedOrder = await mongoose.model('Order').findById(order._id);
+  assert.equal(failedOrder.paymentStatus, 'failed');
+  assert.equal(failedOrder.paymentUrl, 'https://test-payment.momo.vn/pay/mock');
   const notified = await request(app).post('/api/payments/ipn/momo').send(callback);
   assert.equal(notified.body.resultCode, 0);
   const duplicate = await request(app).post('/api/payments/ipn/momo').send(callback);
@@ -226,6 +243,7 @@ test('unpaid orders cannot be refunded; expired online payments release reserved
   const expired = await Order.findById(order._id);
   assert.equal(expired.status, 'cancelled');
   assert.equal(expired.paymentStatus, 'expired');
+  assert.equal(expired.statusHistory.at(-1).status, 'cancelled');
   const inventory = await mongoose.model('Product').findById(product.id);
   assert.equal(inventory.variants.id(variant.id).quantity, reservedQuantity + 1);
   const lateCallback = {
@@ -283,18 +301,22 @@ test('ZaloPay and VNPay create signed payments and verify signed callbacks', asy
   assert.equal((await request(app).post(`/api/orders/${vnOrder._id}/cancel`).set('Authorization', `Bearer ${customerToken}`)).status, 200);
 });
 
-test('only valid order transitions complete sales and permit verified reviews', async () => {
+test('order status history records supported transitions and only delivered orders permit reviews', async () => {
   const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
   const skip = await request(app).patch(`/api/orders/${placedOrder._id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status: 'shipping' });
   assert.equal(skip.status, 409);
   const beforeCompletion = await request(app).post(`/api/products/${product.id}/reviews`).set('Authorization', `Bearer ${customerToken}`).send({ orderId: placedOrder._id, rating: 5, comment: 'Good fit' });
   assert.equal(beforeCompletion.status, 403);
-  for (const status of ['confirmed', 'shipping', 'completed']) {
-    const transition = await request(app).patch(`/api/orders/${placedOrder._id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status });
+  for (const [status, note] of [['confirmed'], ['preparing', 'Đang gói hàng.'], ['shipping'], ['delivery_failed'], ['shipping'], ['completed']]) {
+    const transition = await request(app).patch(`/api/orders/${placedOrder._id}/status`).set('Authorization', `Bearer ${adminToken}`).send({ status, ...(note ? { note } : {}) });
     assert.equal(transition.status, 200);
   }
   const completed = await mongoose.model('Order').findById(placedOrder._id);
   assert.equal(completed.paymentStatus, 'paid');
+  assert.deepEqual(completed.statusHistory.map(event => event.status), ['pending', 'confirmed', 'preparing', 'shipping', 'delivery_failed', 'shipping', 'completed']);
+  assert.equal(completed.statusHistory[2].note, 'Đang gói hàng.');
+  assert.ok(completed.statusHistory.every(event => event.at instanceof Date));
+  assert.equal((await request(app).post(`/api/orders/${placedOrder._id}/cancel`).set('Authorization', `Bearer ${customerToken}`)).status, 409);
   const validReview = await request(app).post(`/api/products/${product.id}/reviews`).set('Authorization', `Bearer ${customerToken}`).send({ orderId: placedOrder._id, rating: 5, comment: 'Good fit' });
   assert.equal(validReview.status, 201);
   const reviewId = validReview.body.data.review._id;

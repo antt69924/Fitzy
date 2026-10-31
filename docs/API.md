@@ -28,7 +28,7 @@ Public registration always creates `customer`. The API never exposes a public ad
 | POST | `/promotions/check` | Customer | Validate promotion against live catalog and stock |
 | POST | `/ai/stylist` | Customer, rate-limited | Gemini advice and database-matched products |
 | GET/PATCH | `/users`, `/users/:id`, `/users/:id/block` | Admin | Customer list, detail, block/unblock |
-| GET/PATCH | `/orders/admin/list`, `/orders/:id/status` | Admin | Filter orders / update valid status |
+| GET/PATCH | `/orders/admin/list`, `/orders/:id/status` | Admin | Filter orders / update valid status; status updates accept an optional `note` (up to 500 characters) and are recorded in the order status history |
 | PATCH | `/orders/:id/payment/confirm` | Admin | Confirm a received bank transfer |
 | PATCH | `/orders/:id/payment/refund` | Admin | Record a completed refund for an offline or online payment |
 | POST | `/payments/ipn/momo`, `/payments/ipn/zalopay` | Provider callback | Verify signed payment notifications |
@@ -63,7 +63,7 @@ The client sends product and variant IDs plus quantity. It does not send prices,
 }
 ```
 
-Valid status flow: `pending → confirmed → shipping → completed`; `pending` and `confirmed` can transition to `cancelled`. A cancellation restores inventory and frees one promotion use in the same transaction. An order paid by bank transfer or an online gateway must be refunded by an admin before cancellation. COD is marked paid at completion. Revenue reports include only completed orders.
+Valid status flow: `pending → confirmed → preparing → shipping → completed`; `pending`, `confirmed`, and `preparing` can transition to `cancelled`; `shipping` can transition to `delivery_failed`, and a failed delivery can return to `shipping` for another attempt. Every new order and status transition records a timestamp and note in `statusHistory`; legacy orders created before this field was added have no historical timestamps. A cancellation restores inventory and frees one promotion use in the same transaction. An order paid by bank transfer or an online gateway must be refunded by an admin before cancellation. Provider refunds are performed outside FITZY and only recorded by the admin endpoint. COD is marked paid at completion. Revenue reports include only completed orders.
 
 The checkout lists MoMo, ZaloPay, and VNPay only when that provider's credentials and callback URLs are configured in `FITZY-API/.env`. MoMo and ZaloPay create the payment session on the server and use signed IPN callbacks. VNPay uses a signed redirect URL, signed return verification, and a separate IPN endpoint; register `VNPAY_IPN_URL` in the VNPay merchant portal. Use publicly reachable HTTPS callback URLs and sandbox credentials for testing. `FITZY_PAYMENT_RETURN_URL` defaults to `fitzy://payment-result`; the Expo app registers the `fitzy` URL scheme and refreshes orders when the customer returns. Never put gateway secrets in mobile `.env` or the app bundle.
 

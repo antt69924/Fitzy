@@ -17,8 +17,8 @@ The project uses JavaScript throughout; there are no TypeScript sources.
 
 - Checkout supports COD and manual bank transfer. MoMo, ZaloPay, and VNPay options appear when their API-side merchant keys and callback URLs are configured. Provider payments use signed server requests/callbacks; online transactions must be refunded through the provider before an admin records the refund and permits cancellation.
 - Shipping costs 30,000 VND below a 500,000 VND post-discount subtotal and is free at or above that amount.
-- Dashboard revenue counts orders marked `completed`. Cancelled, pending, confirmed, and shipping orders are not recognized as revenue. Completed COD orders are marked paid when the administrator completes them.
-- Stock is reserved when a customer places an order and restored if a pending/confirmed order is cancelled. Order transitions and promotion usage updates use MongoDB transactions.
+- Dashboard revenue counts orders marked `completed`. Cancelled, pending, confirmed, preparing, shipping, delivery-failed orders are not recognized as revenue. Completed COD orders are marked paid when the administrator completes them.
+- Stock is reserved when a customer places an order and restored if a pending/confirmed/preparing order is cancelled. Order transitions and promotion usage updates use MongoDB transactions. New orders record each status change and its timestamp; legacy orders do not have historical status timestamps.
 - Therefore MongoDB must run as a replica set, including for a local demo. A one-node replica set is sufficient.
 - Seed admin credentials come from environment variables. The seed script refuses to run without a password of at least 12 characters. Public registration only creates customer accounts.
 - Demo product and banner photos reference Unsplash image URLs. Replace them with store-owned or properly licensed images before presenting FITZY as a real shop.

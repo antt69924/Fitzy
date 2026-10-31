@@ -54,8 +54,8 @@ router.patch('/orders/:id/payment/confirm', admin, [param('id').isMongoId()], va
 router.patch('/orders/:id/payment/refund', admin, [param('id').isMongoId()], validate, orderController.markRefunded);
 router.get('/orders', auth.requireAuth, orderController.mine);
 router.get('/orders/admin/list', admin, resources.adminOrders);
-router.get('/orders/:id', auth.requireAuth, orderController.detail);
-router.post('/orders/:id/cancel', auth.requireAuth, orderController.cancel);
+router.get('/orders/:id', auth.requireAuth, [param('id').isMongoId()], validate, orderController.detail);
+router.post('/orders/:id/cancel', auth.requireAuth, [param('id').isMongoId()], validate, orderController.cancel);
 router.post('/products/:productId/reviews', auth.requireAuth, [body('rating').isInt({ min: 1, max: 5 }), body('orderId').isMongoId(), body('comment').optional().isString().isLength({ max: 1200 })], validate, resources.createReview);
 router.patch('/reviews/:id', auth.requireAuth, resources.ownReviewUpdate);
 router.delete('/reviews/:id', auth.requireAuth, resources.ownReviewDelete);
@@ -81,7 +81,7 @@ router.post('/ai/stylist', auth.requireAuth, aiLimit, stylistRules, validate, as
 router.get('/users', admin, resources.customers);
 router.get('/users/:id', admin, resources.customerDetail);
 router.patch('/users/:id/block', admin, [body('isBlocked').isBoolean()], validate, resources.blockCustomer);
-router.patch('/orders/:id/status', admin, [body('status').isIn(['pending', 'confirmed', 'shipping', 'completed', 'cancelled'])], validate, resources.changeAdminOrderStatus);
+router.patch('/orders/:id/status', admin, [param('id').isMongoId(), body('status').isIn(['pending', 'confirmed', 'preparing', 'shipping', 'completed', 'cancelled', 'delivery_failed']), body('note').optional().isString().trim().isLength({ max: 500 })], validate, resources.changeAdminOrderStatus);
 router.get('/reviews/admin/list', admin, resources.adminReviews);
 router.patch('/reviews/:id/moderate', admin, [body('status').isIn(['visible', 'hidden'])], validate, resources.moderateReview);
 router.get('/stats', admin, resources.stats);

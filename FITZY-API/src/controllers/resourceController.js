@@ -146,7 +146,7 @@ const adminOrders = asyncHandler(async (req, res) => {
 });
 const changeAdminOrderStatus = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id); if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
-  res.json({ success: true, data: { order: await orderService.changeOrderStatus(order, req.body.status) } });
+  res.json({ success: true, data: { order: await orderService.changeOrderStatus(order, req.body.status, req.body.note) } });
 });
 
 const stats = asyncHandler(async (req, res) => {

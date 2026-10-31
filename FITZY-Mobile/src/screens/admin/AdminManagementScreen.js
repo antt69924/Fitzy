@@ -14,8 +14,8 @@ const resource = {
   posts: { title: 'Bài viết', path: '/admin/posts', editable: true, searchable: true },
   promotions: { title: 'Khuyến mãi', path: '/admin/promotions', editable: true, searchable: true }
 };
-const orderNext = { pending: ['confirmed', 'cancelled'], confirmed: ['shipping', 'cancelled'], shipping: ['completed'], completed: [], cancelled: [] };
-const statusLabel = { active: 'Đang hoạt động', hidden: 'Đã ẩn', draft: 'Bản nháp', published: 'Đã xuất bản', pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', shipping: 'Đang giao', completed: 'Hoàn tất', cancelled: 'Đã hủy', visible: 'Đang hiển thị', blocked: 'Đã khóa' };
+const orderNext = { pending: ['confirmed', 'cancelled'], confirmed: ['preparing', 'cancelled'], preparing: ['shipping', 'cancelled'], shipping: ['completed', 'delivery_failed'], delivery_failed: ['shipping'], completed: [], cancelled: [] };
+const statusLabel = { active: 'Đang hoạt động', hidden: 'Đã ẩn', draft: 'Bản nháp', published: 'Đã xuất bản', pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', preparing: 'Đang chuẩn bị hàng', shipping: 'Đang giao hàng', completed: 'Đã giao hàng', delivery_failed: 'Giao hàng thất bại', cancelled: 'Đã hủy', visible: 'Đang hiển thị', blocked: 'Đã khóa' };
 const pageLimit = 10;
 const singularLabel = { categories: 'danh mục', products: 'sản phẩm', posts: 'bài viết', promotions: 'khuyến mãi' };
 
