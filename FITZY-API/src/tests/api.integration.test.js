@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const mongoose = require('mongoose');
 const request = require('supertest');
 const { MongoMemoryReplSet } = require('mongodb-memory-server');
@@ -14,6 +17,7 @@ process.env.BANK_TRANSFER_ACCOUNT_NUMBER = '1234567890';
 process.env.MOMO_PARTNER_CODE = 'MOMO_TEST'; process.env.MOMO_ACCESS_KEY = 'momo-access-test'; process.env.MOMO_SECRET_KEY = 'momo-secret-test'; process.env.MOMO_IPN_URL = 'https://fitzy.example/api/payments/ipn/momo'; process.env.MOMO_REDIRECT_URL = 'fitzy://payment-result';
 process.env.ZALOPAY_APP_ID = '2553'; process.env.ZALOPAY_KEY1 = 'zalo-key1-test'; process.env.ZALOPAY_KEY2 = 'zalo-key2-test'; process.env.ZALOPAY_CALLBACK_URL = 'https://fitzy.example/api/payments/ipn/zalopay'; process.env.ZALOPAY_REDIRECT_URL = 'fitzy://payment-result';
 process.env.VNPAY_TMN_CODE = 'FITZYTEST'; process.env.VNPAY_HASH_SECRET = 'vnpay-secret-test'; process.env.VNPAY_RETURN_URL = 'https://fitzy.example/api/payments/return/vnpay'; process.env.VNPAY_IPN_URL = 'https://fitzy.example/api/payments/ipn/vnpay';
+process.env.UPLOAD_DIR = path.join(os.tmpdir(), `fitzy-api-test-uploads-${process.pid}`);
 let replicaSet; let app; let customerToken; let product; let variant; let adminUser; let placedOrder;
 const { syncFirebaseUser } = require('../services/authService');
 
@@ -29,7 +33,7 @@ test.before(async () => {
   await Promotion.create({ code: 'SAVE10', discountType: 'percent', discountValue: 10, minimumOrder: 0, startsAt: new Date(Date.now() - 60000), endsAt: new Date(Date.now() + 3600000), active: true });
 });
 
-test.after(async () => { await mongoose.disconnect(); await replicaSet?.stop(); });
+test.after(async () => { await mongoose.disconnect(); await replicaSet?.stop(); await fs.rm(process.env.UPLOAD_DIR, { recursive: true, force: true }); });
 
 test('auth validates registration, login, and rejects invalid credentials', async () => {
   const registered = await request(app).post('/api/auth/register').send({ name: 'Test Buyer', email: 'buyer@test.fitzy', password: 'secure-pass-123' });
@@ -138,6 +142,70 @@ test('order ownership is enforced and cancellation restores stock', async () => 
   assert.equal(cancelled.body.data.order.status, 'cancelled');
   const refreshed = await mongoose.model('Product').findById(product.id);
   assert.equal(refreshed.variants.id(variant.id).quantity, 99);
+});
+
+test('admin product CRUD validates categories and variants, populates category names, and records activity', async () => {
+  const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const headers = { Authorization: `Bearer ${adminToken}` };
+  const category = await mongoose.model('Category').create({ name: 'Admin apparel', slug: 'admin-apparel' });
+  const hiddenCategory = await mongoose.model('Category').create({ name: 'Hidden apparel', slug: 'hidden-apparel', status: 'hidden' });
+  const denied = await request(app).post('/api/admin/products').set('Authorization', `Bearer ${customerToken}`).send({ name: 'No access', category: category.id, price: 1000, variants: [{ size: 'M', color: 'Black', quantity: 1 }] });
+  assert.equal(denied.status, 403);
+
+  const created = await request(app).post('/api/admin/products').set(headers).send({ name: 'Admin polo', category: category.id, price: 120000, compareAtPrice: 150000, images: ['https://example.test/polo.jpg'], variants: [{ sku: 'POLO-M-BLK', size: 'M', color: 'Black', quantity: 3 }] });
+  assert.equal(created.status, 201);
+  const createdProduct = created.body.data.item;
+  const invalidCategory = await request(app).post('/api/admin/products').set(headers).send({ name: 'Bad category', category: hiddenCategory.id, price: 1000, variants: [{ size: 'M', color: 'Black', quantity: 1 }] });
+  assert.equal(invalidCategory.status, 400);
+  const missingCategory = await request(app).post('/api/admin/products').set(headers).send({ name: 'Missing category', category: new mongoose.Types.ObjectId().toString(), price: 1000, variants: [{ size: 'M', color: 'Black', quantity: 1 }] });
+  assert.equal(missingCategory.status, 400);
+  const invalidInventory = await request(app).patch(`/api/admin/products/${createdProduct._id}`).set(headers).send({ variants: [{ ...createdProduct.variants[0], quantity: -1 }] });
+  assert.equal(invalidInventory.status, 400);
+  const missingReason = await request(app).patch(`/api/admin/products/${createdProduct._id}`).set(headers).send({ variants: [{ ...createdProduct.variants[0], quantity: 5 }] });
+  assert.equal(missingReason.status, 400);
+
+  const updated = await request(app).patch(`/api/admin/products/${createdProduct._id}`).set(headers).send({ price: 110000, variants: [{ ...createdProduct.variants[0], quantity: 5 }], inventoryReason: 'Nhập hàng bổ sung' });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.data.item.variants[0].quantity, 5);
+  const listed = await request(app).get('/api/admin/products?category=' + category.id).set(headers);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.data.items[0].category.name, category.name);
+  assert.equal(listed.body.data.items[0].variants[0].sku, 'POLO-M-BLK');
+
+  const activities = await request(app).get(`/api/admin/products/${createdProduct._id}/activity`).set(headers);
+  assert.equal(activities.status, 200);
+  assert.ok(activities.body.data.items.some(item => item.action === 'price_changed'));
+  const stockActivity = activities.body.data.items.find(item => item.action === 'inventory_changed');
+  assert.equal(stockActivity.reason, 'Nhập hàng bổ sung');
+  assert.equal(stockActivity.actor._id, adminUser.id);
+  assert.equal(stockActivity.changes[0].before, 3);
+  assert.equal(stockActivity.changes[0].after, 5);
+  assert.equal((await request(app).get(`/api/admin/products/${createdProduct._id}/activity`).set('Authorization', `Bearer ${customerToken}`)).status, 403);
+
+  const hidden = await request(app).delete(`/api/admin/products/${createdProduct._id}`).set(headers);
+  assert.equal(hidden.status, 200);
+  const publicList = await request(app).get('/api/products?q=Admin%20polo');
+  assert.equal(publicList.body.data.items.some(item => item._id === createdProduct._id), false);
+  assert.equal((await request(app).get(`/api/products/${createdProduct._id}`)).status, 404);
+  const hiddenList = await request(app).get('/api/admin/products?status=hidden').set(headers);
+  assert.ok(hiddenList.body.data.items.some(item => item._id === createdProduct._id));
+});
+
+test('admin category CRUD and image upload enforce access and file constraints', async () => {
+  const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  const headers = { Authorization: `Bearer ${adminToken}` };
+  const category = await request(app).post('/api/admin/categories').set(headers).send({ name: 'Temporary category', description: 'For API tests', status: 'active' });
+  assert.equal(category.status, 201);
+  const patched = await request(app).patch(`/api/admin/categories/${category.body.data.item._id}`).set(headers).send({ status: 'hidden' });
+  assert.equal(patched.status, 200);
+  const deniedUpload = await request(app).post('/api/admin/uploads').set('Authorization', `Bearer ${customerToken}`).attach('image', Buffer.from('fake'), { filename: 'image.png', contentType: 'image/png' });
+  assert.equal(deniedUpload.status, 403);
+  const upload = await request(app).post('/api/admin/uploads').set(headers).attach('image', Buffer.from('test-image'), { filename: 'image.png', contentType: 'image/png' });
+  assert.equal(upload.status, 201);
+  assert.match(upload.body.data.url, /\/uploads\//);
+  const invalidUpload = await request(app).post('/api/admin/uploads').set(headers).attach('image', Buffer.from('test'), { filename: 'image.gif', contentType: 'image/gif' });
+  assert.equal(invalidUpload.status, 400);
+  assert.equal((await request(app).delete(`/api/admin/categories/${category.body.data.item._id}`).set(headers)).status, 200);
 });
 
 test('bank transfer is listed when configured and can be confirmed by an admin', async () => {

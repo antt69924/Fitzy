@@ -37,7 +37,7 @@ function Input({ label, value, onChangeText, placeholder, multiline, keyboardTyp
 
 function Editor({ kind, item, categories, onClose, onSave }) {
   const [draft, setDraft] = useState(() => {
-    if (kind === 'products') return { name: item?.name || '', description: item?.description || '', category: item?.category?._id || item?.category || '', price: String(item?.price ?? ''), compareAtPrice: String(item?.compareAtPrice ?? ''), images: (item?.images || []).join('\n'), variants: item?.variants?.length ? item.variants.map(variant => ({ ...variant })) : [{ size: 'M', color: 'Đen', colorHex: '#222222', quantity: '1', sku: '' }], status: item?.status || 'active', featured: Boolean(item?.featured), tags: (item?.tags || []).join(', ') };
+    if (kind === 'products') return { name: item?.name || '', description: item?.description || '', category: item?.category?._id || item?.category || '', price: String(item?.price ?? ''), compareAtPrice: String(item?.compareAtPrice ?? ''), images: (item?.images || []).join('\n'), variants: item?.variants?.length ? item.variants.map(variant => ({ ...variant })) : [{ size: 'M', color: 'Đen', colorHex: '#222222', quantity: '1', sku: '' }], status: item?.status || 'active', featured: Boolean(item?.featured), tags: (item?.tags || []).join(', '), inventoryReason: '' };
     if (kind === 'categories') return { name: item?.name || '', description: item?.description || '', image: item?.image || '', status: item?.status || 'active' };
     if (kind === 'posts') return { title: item?.title || '', excerpt: item?.excerpt || '', content: item?.content || '', image: item?.image || '', status: item?.status || 'draft' };
     return { code: item?.code || '', discountType: item?.discountType || 'percent', discountValue: String(item?.discountValue ?? ''), minimumOrder: String(item?.minimumOrder ?? 0), maximumDiscount: String(item?.maximumDiscount ?? ''), startsAt: item?.startsAt ? new Date(item.startsAt).toISOString().slice(0, 16) : '', endsAt: item?.endsAt ? new Date(item.endsAt).toISOString().slice(0, 16) : '', usageLimit: String(item?.usageLimit ?? ''), active: item?.active ?? true };
@@ -65,7 +65,7 @@ function Editor({ kind, item, categories, onClose, onSave }) {
     try {
       let body;
       if (kind === 'products') {
-        body = { name: draft.name.trim(), description: draft.description, category: draft.category, price: Number(draft.price), compareAtPrice: draft.compareAtPrice === '' ? undefined : Number(draft.compareAtPrice), images: draft.images.split('\n').map(value => value.trim()).filter(Boolean), variants: draft.variants.map(variant => ({ ...variant, quantity: Number(variant.quantity), isActive: variant.isActive !== false })).filter(variant => variant.size && variant.color), status: draft.status, featured: draft.featured, tags: draft.tags.split(',').map(value => value.trim()).filter(Boolean) };
+        body = { name: draft.name.trim(), description: draft.description, category: draft.category, price: Number(draft.price), compareAtPrice: draft.compareAtPrice === '' ? undefined : Number(draft.compareAtPrice), images: draft.images.split('\n').map(value => value.trim()).filter(Boolean), variants: draft.variants.map(variant => ({ ...variant, quantity: Number(variant.quantity), isActive: variant.isActive !== false })).filter(variant => variant.size && variant.color), status: draft.status, featured: draft.featured, tags: draft.tags.split(',').map(value => value.trim()).filter(Boolean), inventoryReason: draft.inventoryReason };
         if (!body.name || !body.category || draft.price === '' || !Number.isFinite(body.price) || body.price < 0 || body.variants.length === 0) throw new Error('Nhập tên, danh mục, giá hợp lệ và ít nhất một biến thể.');
         if (body.variants.some(variant => !Number.isInteger(variant.quantity) || variant.quantity < 0)) throw new Error('Tồn kho của từng biến thể phải là số nguyên không âm.');
         if (body.compareAtPrice !== undefined && (!Number.isFinite(body.compareAtPrice) || body.compareAtPrice < 0)) throw new Error('Giá niêm yết phải là số không âm.');
@@ -106,6 +106,7 @@ function Editor({ kind, item, categories, onClose, onSave }) {
             <Input label="Giá niêm yết (VND)" value={draft.compareAtPrice} onChangeText={value => change('compareAtPrice', value)} keyboardType="numeric" />
             <Input label="Ảnh sản phẩm · mỗi URL một dòng" value={draft.images} onChangeText={value => change('images', value)} multiline />
             <Button title={uploading ? 'Đang tải ảnh…' : 'Chọn ảnh để tải lên'} variant="light" loading={uploading} onPress={uploadImage} />
+            <Input label="Lý do điều chỉnh tồn kho" value={draft.inventoryReason} onChangeText={value => change('inventoryReason', value)} placeholder="Ví dụ: Nhập hàng bổ sung" />
             <Text style={{ color: theme.colors.muted, fontSize: 12, fontWeight: '700' }}>Biến thể · size, màu, tồn kho</Text>
             {draft.variants.map((variant, index) => <View key={variant._id || `variant-${index}`} style={{ gap: 9, padding: 12, borderRadius: 14, backgroundColor: theme.colors.white, borderWidth: 1, borderColor: theme.colors.line }}>
               <Input label="Size" value={variant.size} onChangeText={value => setVariant(index, 'size', value)} placeholder="M" />
@@ -207,7 +208,7 @@ export default function AdminManagementScreen({ route }) {
 
   useEffect(() => {
     let active = true;
-    if (['products', 'reviews'].includes(kind)) api.get('/admin/categories', { params: { limit: 100 } }).then(response => { if (active) setCategories(response.data.data.items); }).catch(() => {});
+    if (['products', 'reviews'].includes(kind)) api.get('/admin/categories', { params: { limit: 100, status: 'active' } }).then(response => { if (active) setCategories(response.data.data.items); }).catch(() => {});
     if (['products', 'reviews'].includes(kind)) api.get('/admin/products', { params: { limit: 100 } }).then(response => { if (active) setProducts(response.data.data.items); }).catch(() => {});
     return () => { active = false; };
   }, [kind]);

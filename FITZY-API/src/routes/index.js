@@ -85,6 +85,7 @@ router.patch('/orders/:id/status', admin, [param('id').isMongoId(), body('status
 router.get('/reviews/admin/list', admin, resources.adminReviews);
 router.patch('/reviews/:id/moderate', admin, [body('status').isIn(['visible', 'hidden'])], validate, resources.moderateReview);
 router.get('/stats', admin, resources.stats);
+router.get('/admin/products/:id/activity', admin, [param('id').isMongoId()], validate, resources.productActivity);
 
 for (const kind of ['categories', 'products', 'posts', 'promotions']) {
   router.get(`/admin/${kind}`, admin, resources.adminList(kind));
