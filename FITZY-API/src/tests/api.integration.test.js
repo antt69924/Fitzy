@@ -24,7 +24,7 @@ test.before(async () => {
   const User = require('../models/User'); const Category = require('../models/Category'); const Product = require('../models/Product'); const Promotion = require('../models/Promotion');
   adminUser = await User.create({ name: 'Test Admin', email: 'admin@test.fitzy', passwordHash: 'not-a-login-hash', role: 'admin' });
   const category = await Category.create({ name: 'Test shirts', slug: 'test-shirts' });
-  product = await Product.create({ name: 'Test T-shirt', slug: 'test-shirt', category: category._id, price: 100000, status: 'active', variants: [{ size: 'M', color: 'Black', quantity: 5 }] });
+  product = await Product.create({ name: 'Test T-shirt', slug: 'test-shirt', category: category._id, price: 100000, status: 'active', variants: [{ size: 'M', color: 'Black', quantity: 100 }] });
   variant = product.variants[0];
   await Promotion.create({ code: 'SAVE10', discountType: 'percent', discountValue: 10, minimumOrder: 0, startsAt: new Date(Date.now() - 60000), endsAt: new Date(Date.now() + 3600000), active: true });
 });
@@ -113,9 +113,11 @@ test('promotions are calculated on server and order creation reserves inventory'
   placedOrder = placed.body.data.order;
   assert.deepEqual(placedOrder.statusHistory.map(event => event.status), ['pending']);
   const refreshed = await mongoose.model('Product').findById(product.id);
-  assert.equal(refreshed.variants.id(variant.id).quantity, 4);
-  const overstock = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({ items: [{ productId: product.id, variantId: variant.id, quantity: 5 }], shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' } });
+  assert.equal(refreshed.variants.id(variant.id).quantity, 99);
+  await mongoose.model('Product').updateOne({ _id: product.id, 'variants._id': variant.id }, { $set: { 'variants.$.quantity': 0 } });
+  const overstock = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({ items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' } });
   assert.equal(overstock.status, 409);
+  await mongoose.model('Product').updateOne({ _id: product.id, 'variants._id': variant.id }, { $set: { 'variants.$.quantity': 99 } });
 });
 
 test('order ownership is enforced and cancellation restores stock', async () => {
@@ -135,7 +137,7 @@ test('order ownership is enforced and cancellation restores stock', async () => 
   assert.equal(cancelled.status, 200);
   assert.equal(cancelled.body.data.order.status, 'cancelled');
   const refreshed = await mongoose.model('Product').findById(product.id);
-  assert.equal(refreshed.variants.id(variant.id).quantity, 4);
+  assert.equal(refreshed.variants.id(variant.id).quantity, 99);
 });
 
 test('bank transfer is listed when configured and can be confirmed by an admin', async () => {
@@ -193,13 +195,14 @@ test('MoMo checkout uses a signed provider request and accepts a signed IPN', as
   badAmount.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(badSignData).digest('hex');
   assert.equal((await request(app).post('/api/payments/ipn/momo').send(badAmount)).body.resultCode, 1);
   assert.equal((await mongoose.model('Order').findById(order._id)).paymentStatus, 'pending');
-  const failedCallback = { ...callback, message: 'Payment failed', resultCode: 1 };
+  const failedCallback = { ...callback, message: 'Payment cancelled by customer', resultCode: 1, transId: 0 };
   const failedSignData = ['accessKey', 'amount', 'extraData', 'message', 'orderId', 'orderInfo', 'orderType', 'partnerCode', 'payType', 'requestId', 'responseTime', 'resultCode', 'transId'].map(key => `${key}=${failedCallback[key]}`).join('&');
   failedCallback.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(failedSignData).digest('hex');
   const failedPayment = await request(app).post('/api/payments/ipn/momo').send(failedCallback);
   assert.equal(failedPayment.body.resultCode, 0);
   const failedOrder = await mongoose.model('Order').findById(order._id);
   assert.equal(failedOrder.paymentStatus, 'failed');
+  assert.equal(failedOrder.providerTransactionId, callback.requestId);
   assert.equal(failedOrder.paymentUrl, 'https://test-payment.momo.vn/pay/mock');
   const notified = await request(app).post('/api/payments/ipn/momo').send(callback);
   assert.equal(notified.body.resultCode, 0);
@@ -258,6 +261,46 @@ test('unpaid orders cannot be refunded; expired online payments release reserved
   assert.equal(latePayment.reason, 'ORDER_EXPIRED');
 });
 
+test('a gateway request timeout keeps its reference so a later MoMo IPN can reconcile payment', async () => {
+  const Order = mongoose.model('Order');
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error('simulated connection timeout'); };
+  let response;
+  try {
+    response = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+      items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'momo',
+      shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+    });
+  } finally { global.fetch = originalFetch; }
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.paymentSetupFailed, true);
+  const order = response.body.data.order;
+  assert.equal(order.paymentStatus, 'pending');
+  assert.ok(order.providerTransactionId);
+  const callback = { accessKey: process.env.MOMO_ACCESS_KEY, amount: order.total, extraData: '', message: 'Success', orderId: order.orderNumber, orderInfo: `Thanh toan don ${order.orderNumber}`, orderType: 'momo_wallet', partnerCode: process.env.MOMO_PARTNER_CODE, payType: 'webApp', requestId: order.providerTransactionId, responseTime: Date.now(), resultCode: 0, transId: 99101 };
+  const signData = ['accessKey', 'amount', 'extraData', 'message', 'orderId', 'orderInfo', 'orderType', 'partnerCode', 'payType', 'requestId', 'responseTime', 'resultCode', 'transId'].map(key => `${key}=${callback[key]}`).join('&');
+  callback.signature = crypto.createHmac('sha256', process.env.MOMO_SECRET_KEY).update(signData).digest('hex');
+  const notified = await request(app).post('/api/payments/ipn/momo').send(callback);
+  assert.equal(notified.body.resultCode, 0);
+  assert.equal((await Order.findById(order._id)).paymentStatus, 'paid');
+});
+
+test('cancellation rejects stale order data if payment became paid before the cancel transaction', async () => {
+  const Order = mongoose.model('Order');
+  const placed = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
+    items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'bank_transfer',
+    shipping: { recipient: 'Test Buyer', phone: '0912345678', line1: '12 Test Street', district: 'District 1', city: 'Ho Chi Minh City' }
+  });
+  const staleOrder = await Order.findById(placed.body.data.order._id);
+  await Order.updateOne({ _id: staleOrder._id }, { $set: { paymentStatus: 'paid' } });
+  const quantityAfterOrder = (await mongoose.model('Product').findById(product.id)).variants.id(variant.id).quantity;
+  await assert.rejects(require('../services/orderService').cancelOrder(staleOrder, staleOrder.user.toString()), error => error.code === 'CANCEL_NOT_ALLOWED');
+  const current = await Order.findById(staleOrder._id);
+  assert.equal(current.paymentStatus, 'paid');
+  assert.equal(current.status, 'pending');
+  assert.equal((await mongoose.model('Product').findById(product.id)).variants.id(variant.id).quantity, quantityAfterOrder);
+});
+
 test('ZaloPay and VNPay create signed payments and verify signed callbacks', async () => {
   const Order = mongoose.model('Order');
   const originalFetch = global.fetch;
@@ -279,9 +322,15 @@ test('ZaloPay and VNPay create signed payments and verify signed callbacks', asy
   const zaloOrder = zaloPlaced.body.data.order;
   const zaloData = JSON.stringify({ app_id: 2553, app_trans_id: zaloOrder.providerTransactionId, amount: zaloOrder.total, zp_trans_id: 77701 });
   const zaloMac = crypto.createHmac('sha256', process.env.ZALOPAY_KEY2).update(zaloData).digest('hex');
+  const wrongZaloData = JSON.stringify({ app_id: 2553, app_trans_id: zaloOrder.providerTransactionId, amount: zaloOrder.total + 1, zp_trans_id: 77701 });
+  const wrongZaloMac = crypto.createHmac('sha256', process.env.ZALOPAY_KEY2).update(wrongZaloData).digest('hex');
+  const wrongZaloCallback = await request(app).post('/api/payments/ipn/zalopay').send({ data: wrongZaloData, mac: wrongZaloMac, type: 1 });
+  assert.equal(wrongZaloCallback.body.return_code, 2);
+  assert.equal((await Order.findById(zaloOrder._id)).paymentStatus, 'pending');
   const zaloCallback = await request(app).post('/api/payments/ipn/zalopay').send({ data: zaloData, mac: zaloMac, type: 1 });
   assert.equal(zaloCallback.body.return_code, 1);
   assert.equal((await Order.findById(zaloOrder._id)).paymentStatus, 'paid');
+  assert.equal((await request(app).post('/api/payments/ipn/zalopay').send({ data: zaloData, mac: zaloMac, type: 1 })).body.return_code, 1);
 
   const vnPlaced = await request(app).post('/api/orders').set('Authorization', `Bearer ${customerToken}`).send({
     items: [{ productId: product.id, variantId: variant.id, quantity: 1 }], paymentMethod: 'vnpay',
@@ -290,12 +339,19 @@ test('ZaloPay and VNPay create signed payments and verify signed callbacks', asy
   assert.equal(vnPlaced.status, 201);
   const vnOrder = vnPlaced.body.data.order;
   const params = Object.fromEntries(new URL(vnPlaced.body.data.paymentUrl).searchParams.entries());
+  params.vnp_ResponseCode = '24'; params.vnp_TransactionStatus = '02'; params.vnp_TransactionNo = '0';
+  let unsigned = Object.fromEntries(Object.entries(params).filter(([key]) => !['vnp_SecureHash', 'vnp_SecureHashType'].includes(key)).sort(([a], [b]) => a.localeCompare(b)));
+  params.vnp_SecureHash = crypto.createHmac('sha512', process.env.VNPAY_HASH_SECRET).update(require('node:querystring').stringify(unsigned, undefined, undefined, { encodeURIComponent: value => value })).digest('hex');
+  const vnCancelled = await request(app).get('/api/payments/ipn/vnpay').query(params);
+  assert.equal(vnCancelled.body.RspCode, '00');
+  assert.equal((await Order.findById(vnOrder._id)).paymentStatus, 'failed');
   params.vnp_ResponseCode = '00'; params.vnp_TransactionStatus = '00'; params.vnp_TransactionNo = '88002';
-  const unsigned = Object.fromEntries(Object.entries(params).filter(([key]) => !['vnp_SecureHash', 'vnp_SecureHashType'].includes(key)).sort(([a], [b]) => a.localeCompare(b)));
+  unsigned = Object.fromEntries(Object.entries(params).filter(([key]) => !['vnp_SecureHash', 'vnp_SecureHashType'].includes(key)).sort(([a], [b]) => a.localeCompare(b)));
   params.vnp_SecureHash = crypto.createHmac('sha512', process.env.VNPAY_HASH_SECRET).update(require('node:querystring').stringify(unsigned, undefined, undefined, { encodeURIComponent: value => value })).digest('hex');
   const vnCallback = await request(app).get('/api/payments/ipn/vnpay').query(params);
   assert.equal(vnCallback.body.RspCode, '00');
   assert.equal((await Order.findById(vnOrder._id)).paymentStatus, 'paid');
+  assert.equal((await request(app).get('/api/payments/ipn/vnpay').query(params)).body.RspCode, '00');
   const adminToken = require('jsonwebtoken').sign({ sub: adminUser.id, role: 'admin' }, process.env.JWT_SECRET, { expiresIn: '1h' });
   assert.equal((await request(app).patch(`/api/orders/${vnOrder._id}/payment/refund`).set('Authorization', `Bearer ${adminToken}`)).status, 200);
   assert.equal((await request(app).post(`/api/orders/${vnOrder._id}/cancel`).set('Authorization', `Bearer ${customerToken}`)).status, 200);

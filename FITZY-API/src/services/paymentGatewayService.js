@@ -74,8 +74,19 @@ function getPaymentUrl(providerId, order, ipAddress) {
   return createVnPayPayment(order, config, ipAddress);
 }
 
+function getPaymentReference(providerId, order) {
+  if (providerId === 'momo') return `${order.orderNumber}-${new Date(order.createdAt || Date.now()).getTime()}`;
+  if (providerId === 'zalopay') {
+    const date = new Date(order.createdAt || Date.now());
+    const transDate = `${String(date.getFullYear()).slice(-2)}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+    return `${transDate}_${order.orderNumber}`;
+  }
+  if (providerId === 'vnpay') return order.orderNumber;
+  throw new Error('Unsupported payment provider');
+}
+
 async function createMomoPayment(order, config) {
-  const requestId = `${order.orderNumber}-${Date.now()}`;
+  const requestId = order.providerTransactionId || getPaymentReference('momo', order);
   const payload = { partnerCode: config.partnerCode, requestId, amount: order.total, orderId: order.orderNumber, orderInfo: `Thanh toan don ${order.orderNumber}`, redirectUrl: config.redirectUrl, ipnUrl: config.ipnUrl, requestType: 'payWithMethod', extraData: '', lang: 'vi', orderExpireTime: 15 };
   const signData = `accessKey=${config.accessKey}&amount=${payload.amount}&extraData=${payload.extraData}&ipnUrl=${payload.ipnUrl}&orderId=${payload.orderId}&orderInfo=${payload.orderInfo}&partnerCode=${payload.partnerCode}&redirectUrl=${payload.redirectUrl}&requestId=${payload.requestId}&requestType=${payload.requestType}`;
   payload.signature = hmac('sha256', config.secretKey, signData);
@@ -87,7 +98,7 @@ async function createMomoPayment(order, config) {
 
 async function createZaloPayPayment(order, config) {
   const now = Date.now(); const appTime = now; const date = new Date(now); const transDate = `${String(date.getFullYear()).slice(-2)}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-  const appTransId = `${transDate}_${order.orderNumber}`; const appUser = order.user.toString(); const item = '[]';
+  const appTransId = order.providerTransactionId || `${transDate}_${order.orderNumber}`; const appUser = order.user.toString(); const item = '[]';
   const embedData = JSON.stringify({ redirecturl: config.redirectUrl });
   const payload = { app_id: Number(config.appId), app_user: appUser, app_time: appTime, amount: order.total, app_trans_id: appTransId, embed_data: embedData, item, description: `Thanh toan don ${order.orderNumber}`, callback_url: config.callbackUrl, bank_code: '', mac: '' };
   const signData = `${payload.app_id}|${payload.app_trans_id}|${payload.app_user}|${payload.amount}|${payload.app_time}|${payload.embed_data}|${payload.item}`;
@@ -134,7 +145,7 @@ function verifyVnPayCallback(query) {
   return safeEqual(hmac('sha512', config.hashSecret, querystring.stringify(sorted, undefined, undefined, { encodeURIComponent: value => value })), vnp_SecureHash);
 }
 
-async function recordProviderResult({ provider, orderNumber, amount, success, transactionId }) {
+async function recordProviderResult({ provider, orderNumber, amount, success }) {
   const method = provider;
   const order = await Order.findOne({ orderNumber, paymentMethod: method });
   if (!order) return { ok: false, reason: 'ORDER_NOT_FOUND' };
@@ -143,7 +154,7 @@ async function recordProviderResult({ provider, orderNumber, amount, success, tr
   if (order.paymentExpiresAt && order.paymentExpiresAt <= new Date()) return { ok: false, reason: 'ORDER_EXPIRED' };
   if (order.status === 'cancelled' || !['pending', 'failed', 'unpaid'].includes(order.paymentStatus)) return { ok: false, reason: 'ORDER_NOT_PAYABLE' };
   const paymentStatus = success ? 'paid' : 'failed';
-  const updated = await Order.findOneAndUpdate({ _id: order._id, paymentStatus: { $in: ['pending', 'failed', 'unpaid'] }, status: { $ne: 'cancelled' }, $or: [{ paymentExpiresAt: null }, { paymentExpiresAt: { $gt: new Date() } }] }, { $set: { paymentStatus, ...(success ? { paymentUrl: '' } : {}), ...(transactionId ? { providerTransactionId: String(transactionId) } : {}) } }, { new: true });
+  const updated = await Order.findOneAndUpdate({ _id: order._id, paymentStatus: { $in: ['pending', 'failed', 'unpaid'] }, status: { $ne: 'cancelled' }, $or: [{ paymentExpiresAt: null }, { paymentExpiresAt: { $gt: new Date() } }] }, { $set: { paymentStatus, ...(success ? { paymentUrl: '' } : {}) } }, { new: true });
   return updated ? { ok: true, order: updated } : { ok: false, reason: 'ORDER_NOT_PAYABLE' };
 }
 
@@ -169,4 +180,4 @@ async function processVnPayCallback(query) {
   return recordProviderResult({ provider: 'vnpay', orderNumber: query.vnp_TxnRef, amount: Number(query.vnp_Amount) / 100, success: query.vnp_ResponseCode === '00' && query.vnp_TransactionStatus === '00', transactionId: query.vnp_TransactionNo });
 }
 
-module.exports = { enabledProviders, getPaymentUrl, createVnPayPayment, verifyMomoCallback, verifyZaloPayCallback, verifyVnPayCallback, processMomoCallback, processZaloPayCallback, processVnPayCallback };
+module.exports = { enabledProviders, getPaymentUrl, getPaymentReference, createVnPayPayment, verifyMomoCallback, verifyZaloPayCallback, verifyVnPayCallback, processMomoCallback, processZaloPayCallback, processVnPayCallback };

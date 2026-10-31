@@ -31,6 +31,7 @@ export default function OrderDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cancelBusy, setCancelBusy] = useState(false);
+  const [checkingPayment, setCheckingPayment] = useState(false);
   const [buyAgainBusy, setBuyAgainBusy] = useState(false);
   const [bankAccount, setBankAccount] = useState(null);
   const [bankAccountError, setBankAccountError] = useState(false);
@@ -71,6 +72,21 @@ export default function OrderDetailScreen({ route, navigation }) {
     else Alert.alert('Không thể hủy đơn', result.error?.message || 'Vui lòng thử lại.');
   }
 
+  async function checkPaymentStatus() {
+    if (checkingPayment) return;
+    setCheckingPayment(true);
+    try {
+      const response = await api.get(`/orders/${order._id}`);
+      const updated = response?.data?.data?.order;
+      if (!updated) throw new Error('Không đọc được trạng thái đơn hàng.');
+      setOrder(updated);
+      const statusText = paymentStatusLabel[updated.paymentStatus] || updated.paymentStatus;
+      Alert.alert(updated.paymentStatus === 'paid' ? 'Thanh toán thành công' : 'Trạng thái thanh toán', `Đơn ${updated.orderNumber}: ${statusText}.`);
+    } catch (checkError) {
+      Alert.alert('Chưa kiểm tra được', checkError.message || 'Kiểm tra kết nối Internet rồi thử lại.');
+    } finally { setCheckingPayment(false); }
+  }
+
   async function handleBuyAgain() {
     setBuyAgainBusy(true);
     const available = [];
@@ -104,7 +120,8 @@ export default function OrderDetailScreen({ route, navigation }) {
   const isDeliveryFailed = order.status === 'delivery_failed';
   const currentStep = steps.findIndex(step => step.key === (isDeliveryFailed ? 'shipping' : order.status));
   const canCancel = ['pending', 'confirmed', 'preparing'].includes(order.status) && order.paymentStatus !== 'paid';
-  const canContinuePayment = !['cancelled', 'completed', 'delivery_failed'].includes(order.status) && order.paymentStatus !== 'paid' && ['pending', 'failed'].includes(order.paymentStatus) && ['momo', 'zalopay', 'vnpay'].includes(order.paymentMethod) && order.paymentUrl && (!order.paymentExpiresAt || new Date(order.paymentExpiresAt) > new Date());
+  const isOnlinePayment = ['momo', 'zalopay', 'vnpay'].includes(order.paymentMethod);
+  const canContinuePayment = !['cancelled', 'completed', 'delivery_failed'].includes(order.status) && order.paymentStatus === 'pending' && isOnlinePayment && order.paymentUrl && (!order.paymentExpiresAt || new Date(order.paymentExpiresAt) > new Date());
   const history = order.statusHistory || [];
   const lastStatusEvent = status => [...history].reverse().find(event => event.status === status);
   return <Page>
@@ -150,6 +167,7 @@ export default function OrderDetailScreen({ route, navigation }) {
       <View style={{ marginTop: 4, padding: 12, borderRadius: 12, backgroundColor: theme.colors.paper, gap: 5 }}><Text style={{ color: theme.colors.ink, fontWeight: '700' }}>{paymentLabel[order.paymentMethod] || order.paymentMethod}</Text><Text style={{ color: theme.colors.muted, fontSize: 12 }}>Trạng thái thanh toán: {paymentStatusLabel[order.paymentStatus] || order.paymentStatus}</Text></View>
       {order.paymentMethod === 'bank_transfer' && order.paymentStatus === 'unpaid' && order.status !== 'cancelled' ? <View style={{ padding: 12, borderRadius: 12, backgroundColor: theme.colors.paper, gap: 4 }}><Text style={{ color: theme.colors.ink, fontWeight: '700' }}>Chuyển khoản với nội dung {order.orderNumber}</Text>{bankAccount ? <Text style={{ color: theme.colors.muted, fontSize: 12, lineHeight: 19 }}>{bankAccount.bankName}{bankAccount.branch ? ` · ${bankAccount.branch}` : ''}{'\n'}Số tài khoản: {bankAccount.accountNumber}{'\n'}Chủ tài khoản: {bankAccount.accountName}</Text> : bankAccountError ? <Text style={{ color: theme.colors.danger, fontSize: 12 }}>Không tải được thông tin tài khoản ngân hàng. Vui lòng liên hệ cửa hàng.</Text> : <Text style={{ color: theme.colors.muted, fontSize: 12 }}>Đang tải thông tin tài khoản ngân hàng…</Text>}<Text style={{ color: theme.colors.muted, fontSize: 12, lineHeight: 18 }}>Cửa hàng sẽ cập nhật trạng thái sau khi đối soát.</Text></View> : null}
       {canContinuePayment ? <Button title="Tiếp tục thanh toán" onPress={() => Linking.openURL(order.paymentUrl).catch(() => Alert.alert('Không thể mở cổng thanh toán'))} /> : null}
+      {isOnlinePayment && ['pending', 'failed'].includes(order.paymentStatus) && order.status !== 'cancelled' ? <Button title="Kiểm tra trạng thái thanh toán" variant="light" loading={checkingPayment} onPress={checkPaymentStatus} /> : null}
       {!['cancelled', 'completed'].includes(order.status) && order.paymentStatus === 'paid' && order.paymentMethod !== 'cod' ? <Text style={{ color: theme.colors.muted, fontSize: 12, lineHeight: 18 }}>Đơn hàng đã thanh toán. Nếu cần hủy, vui lòng liên hệ cửa hàng để xử lý hoàn tiền trước.</Text> : null}
       {!['cancelled', 'completed'].includes(order.status) && ['pending', 'failed'].includes(order.paymentStatus) && ['momo', 'zalopay', 'vnpay'].includes(order.paymentMethod) && !canContinuePayment ? <Text style={{ color: theme.colors.muted, fontSize: 12, lineHeight: 18 }}>Liên kết thanh toán không còn hiệu lực. Bạn có thể mua lại các sản phẩm còn hàng trong đơn này.</Text> : null}
     </View>

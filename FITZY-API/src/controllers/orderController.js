@@ -7,6 +7,8 @@ const { asyncHandler, pageResult } = require('../utils/errors');
 const create = asyncHandler(async (req, res) => {
   const order = await orderService.createOrder(req.user.id, req.body);
   if (!['momo', 'zalopay', 'vnpay'].includes(order.paymentMethod)) return res.status(201).json({ success: true, data: { order } });
+  order.providerTransactionId = paymentGatewayService.getPaymentReference(order.paymentMethod, order);
+  await order.save();
   try {
     const payment = await paymentGatewayService.getPaymentUrl(order.paymentMethod, order, req.ip);
     order.providerTransactionId = payment.transactionId;
@@ -14,8 +16,8 @@ const create = asyncHandler(async (req, res) => {
     await order.save();
     res.status(201).json({ success: true, data: { order, paymentUrl: payment.url } });
   } catch (error) {
-    await orderService.cancelOrder(order, req.user.id);
-    throw error;
+    // Keep the order/reference so a delayed provider notification can reconcile a request timeout.
+    res.status(201).json({ success: true, data: { order, paymentUrl: null, paymentSetupFailed: true } });
   }
 });
 const momoIpn = asyncHandler(async (req, res) => {

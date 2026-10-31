@@ -90,7 +90,9 @@ async function cancelOrder(order, userId, note = '') {
       }
       if (order.promotionCode) await Promotion.updateOne({ code: order.promotionCode, usedCount: { $gt: 0 } }, { $inc: { usedCount: -1 } }, { session });
       const changedAt = new Date();
-      const updated = await Order.updateOne({ _id: order._id, status: { $in: ['pending', 'confirmed', 'preparing'] } }, { $set: { status: 'cancelled', cancelledAt: changedAt }, $push: { statusHistory: { status: 'cancelled', at: changedAt, note: note || statusNotes.cancelled } } }, { session });
+      const updateFilter = { _id: order._id, status: { $in: ['pending', 'confirmed', 'preparing'] } };
+      if (['bank_transfer', 'momo', 'zalopay', 'vnpay'].includes(order.paymentMethod)) updateFilter.paymentStatus = { $ne: 'paid' };
+      const updated = await Order.updateOne(updateFilter, { $set: { status: 'cancelled', cancelledAt: changedAt }, $push: { statusHistory: { status: 'cancelled', at: changedAt, note: note || statusNotes.cancelled } } }, { session });
       if (!updated.modifiedCount) throw new AppError('This order can no longer be cancelled', 409, 'CANCEL_NOT_ALLOWED');
     });
     return Order.findById(order._id);
