@@ -10,9 +10,14 @@ const SHIPPING_THRESHOLD = 500000;
 const SHIPPING_FEE = 30000;
 
 function calculateDiscount(promo, subtotal) {
-  if (!promo) return 0;
-  const raw = promo.discountType === 'percent' ? subtotal * promo.discountValue / 100 : promo.discountValue;
-  return Math.round(Math.min(subtotal, promo.maximumDiscount ? Math.min(raw, promo.maximumDiscount) : raw));
+    if (!promo || !promo.active) return 0;
+    const raw = promo.discountType === 'percent'
+        ? (subtotal * promo.discountValue) / 100
+        : promo.discountValue;
+    const capped = typeof promo.maximumDiscount === 'number' && promo.maximumDiscount >= 0
+        ? Math.min(raw, promo.maximumDiscount)
+        : raw;
+    return Math.round(Math.min(subtotal, Math.max(0, capped)));
 }
 
 async function createOrder(userId, input) {

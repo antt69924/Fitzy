@@ -9,4 +9,5 @@ const orderSchema = new mongoose.Schema({
   statusHistory: { type: [statusHistorySchema], default: [] }, cancelledAt: Date,
   gatewayTransactionId: { type: String, default: '' }, paidAt: Date
 }, { timestamps: true });
+orderSchema.index({ paymentExpiresAt: 1, paymentStatus: 1, status: 1 });
 module.exports = mongoose.model('Order', orderSchema);

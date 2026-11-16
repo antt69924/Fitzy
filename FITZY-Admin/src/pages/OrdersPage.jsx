@@ -8,19 +8,116 @@ import Modal from '../components/Modal';
 const next = { pending: ['confirmed', 'cancelled'], confirmed: ['preparing', 'cancelled'], preparing: ['shipping', 'cancelled'], shipping: ['completed', 'delivery_failed'], delivery_failed: ['shipping'], completed: [], cancelled: [] };
 const orderStatuses = ['pending', 'confirmed', 'preparing', 'shipping', 'completed', 'delivery_failed', 'cancelled'];
 const orderStatusLabel = { pending: 'Chờ xác nhận', confirmed: 'Đã xác nhận', preparing: 'Đang chuẩn bị hàng', shipping: 'Đang giao hàng', completed: 'Đã giao hàng', delivery_failed: 'Giao hàng thất bại', cancelled: 'Đã hủy' };
+const timelineSteps = [
+  { key: 'pending', label: 'Chờ xác nhận' },
+  { key: 'confirmed', label: 'Đã xác nhận' },
+  { key: 'preparing', label: 'Đang chuẩn bị' },
+  { key: 'shipping', label: 'Đang giao' },
+  { key: 'completed', label: 'Đã giao' }
+];
+
+function OrderTimeline({ order }) {
+  const isCancelled = order.status === 'cancelled';
+  const isDeliveryFailed = order.status === 'delivery_failed';
+  const currentStep = timelineSteps.findIndex(s => s.key === order.status);
+  const history = order.statusHistory || [];
+  return (
+    <div className="timeline-card">
+      <b>Tiến trình đơn hàng</b>
+      <div className="timeline-steps">
+        <div className="timeline-line" />
+        {timelineSteps.map((step, idx) => {
+          let dotClass = 'timeline-dot';
+          let labelClass = 'timeline-label';
+          if (!isCancelled && !isDeliveryFailed) {
+            if (idx < currentStep) dotClass += ' done';
+            else if (idx === currentStep) { dotClass += ' current'; labelClass += ' active'; }
+          } else {
+            if (idx <= currentStep && currentStep !== -1) dotClass += ' done';
+          }
+          return (
+            <div key={step.key} className="timeline-step">
+              <div className={dotClass}>{idx < currentStep && !isCancelled ? '✓' : idx + 1}</div>
+              <span className={labelClass}>{step.label}</span>
+            </div>
+          );
+        })}
+      </div>
+      {isCancelled ? (
+        <div className="timeline-badge cancelled">
+          <span className="timeline-dot failed">×</span>
+          <span>Đơn hàng đã hủy {order.paymentStatus === 'expired' ? '(Quá hạn thanh toán)' : ''}</span>
+        </div>
+      ) : isDeliveryFailed ? (
+        <div className="timeline-badge failed">
+          <span className="timeline-dot failed">!</span>
+          <span>Giao hàng chưa thành công</span>
+        </div>
+      ) : null}
+      {history.length > 0 ? (
+        <div className="timeline-history">
+          {history.map((item, idx) => (
+            <div key={idx} className="timeline-item">
+              <span className="timeline-time">{date(item.at)}</span>
+              <span className="timeline-note">{item.note || orderStatusLabel[item.status] || item.status}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 function OrderDetail({ id, onClose, onPaymentMarked }) {
   const [state, setState] = useState({ order: null, error: '', loading: true });
   React.useEffect(() => { let live = true; api.get(`/orders/${id}`).then(response => live && setState({ order: response.data.data.order, error: '', loading: false })).catch(error => live && setState({ order: null, error: error.message, loading: false })); return () => { live = false; }; }, [id]);
   async function confirmTransfer() { try { const response = await api.patch(`/orders/${id}/payment/confirm`); setState(current => ({ ...current, order: response.data.data.order })); onPaymentMarked(); } catch (error) { setState(current => ({ ...current, error: error.message })); } }
   async function confirmRefund() { try { const response = await api.patch(`/orders/${id}/payment/refund`); setState(current => ({ ...current, order: response.data.data.order })); onPaymentMarked(); } catch (error) { setState(current => ({ ...current, error: error.message })); } }
-  return <Modal title="Chi tiết đơn hàng" onClose={onClose}>{state.loading ? <div className="table-state"><span className="spinner" />Đang tải đơn hàng…</div> : state.error && !state.order ? <div className="inline-error">{state.error}</div> : <div className="detail-content">{state.error ? <div className="inline-error">{state.error}</div> : null}<div className="detail-grid"><div><small>Mã đơn</small><b>{state.order.orderNumber}</b></div><div><small>Ngày đặt</small><b>{date(state.order.createdAt)}</b></div><div><small>Khách hàng</small><b>{state.order.user?.name}</b></div><div><small>Liên hệ</small><b>{state.order.user?.email} · {state.order.shipping?.phone}</b></div><div><small>Trạng thái</small><Status value={state.order.status} /></div><div><small>Thanh toán</small><b>{state.order.paymentMethod === 'bank_transfer' ? 'Chuyển khoản ngân hàng' : state.order.paymentMethod?.toUpperCase()} · {state.order.paymentStatus === 'paid' ? 'Đã thanh toán' : state.order.paymentStatus === 'refunded' ? 'Đã hoàn tiền' : state.order.paymentStatus === 'pending' ? 'Đang chờ thanh toán' : state.order.paymentStatus === 'failed' ? 'Thanh toán thất bại' : 'Chưa thanh toán'}</b></div></div>{state.order.paymentMethod === 'bank_transfer' && state.order.paymentStatus === 'unpaid' ? <button className="button primary" onClick={confirmTransfer}>Xác nhận đã nhận chuyển khoản</button> : null}{['bank_transfer', 'momo', 'zalopay', 'vnpay'].includes(state.order.paymentMethod) && state.order.paymentStatus === 'paid' ? <button className="button secondary" onClick={confirmRefund}>Xác nhận đã hoàn tiền</button> : null}<div className="address-card"><b>Địa chỉ giao hàng</b><span>{state.order.shipping?.recipient}, {state.order.shipping?.phone}</span><span>{[state.order.shipping?.line1, state.order.shipping?.ward, state.order.shipping?.district, state.order.shipping?.city].filter(Boolean).join(', ')}</span></div><div className="table-wrap"><table><thead><tr><th>Sản phẩm</th><th>Size · màu</th><th>SL</th><th>Đơn giá</th></tr></thead><tbody>{state.order.items.map((item, index) => <tr key={index}><td>{item.name}</td><td>{item.size} · {item.color}</td><td>{item.quantity}</td><td>{money(item.unitPrice)}</td></tr>)}</tbody></table></div><div className="order-totals"><span>Tạm tính <b>{money(state.order.subtotal)}</b></span><span>Giảm giá <b>− {money(state.order.discount)}</b></span><span>Phí giao hàng <b>{money(state.order.shippingFee)}</b></span><strong>Tổng cộng <b>{money(state.order.total)}</b></strong></div></div>}</Modal>;
+  return <Modal title="Chi tiết đơn hàng" onClose={onClose}>{state.loading ? <div className="table-state"><span className="spinner" />Đang tải đơn hàng…</div> : state.error && !state.order ? <div className="inline-error">{state.error}</div> : <div className="detail-content">{state.error ? <div className="inline-error">{state.error}</div> : null}<div className="detail-grid"><div><small>Mã đơn</small><b>{state.order.orderNumber}</b></div><div><small>Ngày đặt</small><b>{date(state.order.createdAt)}</b></div><div><small>Khách hàng</small><b>{state.order.user?.name}</b></div><div><small>Liên hệ</small><b>{state.order.user?.email} · {state.order.shipping?.phone}</b></div><div><small>Trạng thái</small><Status value={state.order.status} /></div><div><small>Thanh toán</small><b>{state.order.paymentMethod === 'bank_transfer' ? 'Chuyển khoản ngân hàng' : state.order.paymentMethod?.toUpperCase()} · {state.order.paymentStatus === 'paid' ? 'Đã thanh toán' : state.order.paymentStatus === 'refunded' ? 'Đã hoàn tiền' : state.order.paymentStatus === 'pending' ? 'Đang chờ thanh toán' : state.order.paymentStatus === 'failed' ? 'Thanh toán thất bại' : 'Chưa thanh toán'}</b></div></div><OrderTimeline order={state.order} />{state.order.paymentMethod === 'bank_transfer' && state.order.paymentStatus === 'unpaid' ? <button className="button primary" onClick={confirmTransfer}>Xác nhận đã nhận chuyển khoản</button> : null}{['bank_transfer', 'momo', 'zalopay', 'vnpay'].includes(state.order.paymentMethod) && state.order.paymentStatus === 'paid' ? <button className="button secondary" onClick={confirmRefund}>Xác nhận đã hoàn tiền</button> : null}<div className="address-card"><b>Địa chỉ giao hàng</b><span>{state.order.shipping?.recipient}, {state.order.shipping?.phone}</span><span>{[state.order.shipping?.line1, state.order.shipping?.ward, state.order.shipping?.district, state.order.shipping?.city].filter(Boolean).join(', ')}</span></div><div className="table-wrap"><table><thead><tr><th>Sản phẩm</th><th>Size · màu</th><th>SL</th><th>Đơn giá</th></tr></thead><tbody>{state.order.items.map((item, index) => <tr key={index}><td>{item.name}</td><td>{item.size} · {item.color}</td><td>{item.quantity}</td><td>{money(item.unitPrice)}</td></tr>)}</tbody></table></div><div className="order-totals"><span>Tạm tính <b>{money(state.order.subtotal)}</b></span><span>Giảm giá <b>− {money(state.order.discount)}</b></span><span>Phí giao hàng <b>{money(state.order.shippingFee)}</b></span><strong>Tổng cộng <b>{money(state.order.total)}</b></strong></div></div>}</Modal>;
 }
 
 export default function OrdersPage() {
-  const [page, setPage] = useState(1); const [status, setStatus] = useState(''); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [query, setQuery] = useState(''); const [search, setSearch] = useState(''); const [detailId, setDetailId] = useState(''); const [notice, setNotice] = useState(''); const [busyId, setBusyId] = useState(''); const params = useMemo(() => ({ page, limit: 15, status: status || undefined, from: from || undefined, to: to || undefined, q: search || undefined }), [page, status, from, to, search]); const { items, pagination, loading, error, refresh } = useResource('/orders/admin/list', params);
+  const [page, setPage] = useState(1); const [status, setStatus] = useState(''); const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [query, setQuery] = useState(''); const [search, setSearch] = useState(''); const [detailId, setDetailId] = useState(''); const [notice, setNotice] = useState(''); const [busyId, setBusyId] = useState(''); const [exporting, setExporting] = useState(false); const params = useMemo(() => ({ page, limit: 15, status: status || undefined, from: from || undefined, to: to || undefined, q: search || undefined }), [page, status, from, to, search]); const { items, pagination, loading, error, refresh } = useResource('/orders/admin/list', params);
+  const handleExport = async () => {
+    try {
+      setExporting(true);
+      const exportParams = {
+        status: status || undefined,
+        from: from || undefined,
+        to: to || undefined,
+        q: search || undefined
+      };
+      const response = await api.get('/orders/admin/export', {
+        params: exportParams,
+        responseType: 'blob'
+      });
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Don_hang_FITZY_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setNotice('Không thể xuất file: ' + (err.response?.data?.error?.message || err.message));
+    } finally {
+      setExporting(false);
+    }
+  };
   async function updateStatus(id, value) { if (value === 'cancelled' && !window.confirm('Bạn có chắc muốn hủy đơn hàng này?')) return; setBusyId(id); try { await api.patch(`/orders/${id}/status`, { status: value }); setNotice('Đã cập nhật trạng thái đơn hàng.'); refresh(); } catch (err) { setNotice(err.message); } finally { setBusyId(''); } }
   return <div className="page-stack"><div className="page-heading"><div><span className="eyebrow">GIAO DỊCH & GIAO NHẬN</span><h1>{title('orders')}</h1><p>Kiểm tra đơn hàng, địa chỉ nhận và tình trạng thanh toán.</p></div></div>{notice ? <div className="notice-bar">{notice}<button onClick={() => setNotice('')}>×</button></div> : null}
-    <section className="panel data-panel"><div className="table-toolbar"><form className="search-form" onSubmit={event => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Tìm mã đơn, tên, email hoặc số điện thoại…" aria-label="Tìm đơn hàng hoặc khách hàng" /><button type="submit" className="button secondary">Tìm</button></form><label className="filter-label">Trạng thái<select className="select-control" value={status} onChange={event => { setPage(1); setStatus(event.target.value); }}><option value="">Tất cả</option>{orderStatuses.map(value => <option key={value} value={value}>{orderStatusLabel[value]}</option>)}</select></label><label className="filter-label">Từ ngày<input className="select-control" type="date" value={from} onChange={event => { setPage(1); setFrom(event.target.value); }} /></label><label className="filter-label">Đến ngày<input className="select-control" type="date" value={to} onChange={event => { setPage(1); setTo(event.target.value); }} /></label><div className="toolbar-meta">{pagination ? `${pagination.total} đơn hàng` : 'ĐÃ XÁC NHẬN Ở API'}</div></div><DataTable columns={[{ key: 'orderNumber', label: 'Mã đơn' }, { key: 'user', label: 'Khách hàng' }, { key: 'createdAt', label: 'Ngày đặt', type: 'date' }, { key: 'total', label: 'Tổng tiền', type: 'money' }, { key: 'paymentStatus', label: 'Thanh toán', type: 'status' }, { key: 'status', label: 'Trạng thái', type: 'status' }]} rows={items} loading={loading} error={error} onRetry={refresh} renderActions={row => <><button className="table-action" onClick={() => setDetailId(row._id)}>Chi tiết</button><select aria-label="Cập nhật trạng thái" className="mini-select" disabled={busyId === row._id} value={row.status} onChange={event => updateStatus(row._id, event.target.value)}>{[row.status, ...(next[row.status] || [])].map(value => <option key={value} value={value}>{orderStatusLabel[value] || value}</option>)}</select></>} />{pagination?.pages > 1 ? <div className="pagination"><span>Trang {page} / {pagination.pages}</span><div><button className="button secondary small-button" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>Trước</button><button className="button secondary small-button" disabled={page >= pagination.pages} onClick={() => setPage(value => value + 1)}>Sau</button></div></div> : null}</section>
+    <section className="panel data-panel"><div className="table-toolbar"><form className="search-form" onSubmit={event => { event.preventDefault(); setPage(1); setSearch(query.trim()); }}><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Tìm mã đơn, tên, email hoặc số điện thoại…" aria-label="Tìm đơn hàng hoặc khách hàng" /><button type="submit" className="button secondary">Tìm</button></form><label className="filter-label">Trạng thái<select className="select-control" value={status} onChange={event => { setPage(1); setStatus(event.target.value); }}><option value="">Tất cả</option>{orderStatuses.map(value => <option key={value} value={value}>{orderStatusLabel[value]}</option>)}</select></label><label className="filter-label">Từ ngày<input className="select-control" type="date" value={from} onChange={event => { setPage(1); setFrom(event.target.value); }} /></label><label className="filter-label">Đến ngày<input className="select-control" type="date" value={to} onChange={event => { setPage(1); setTo(event.target.value); }} /></label><div className="toolbar-meta">{pagination ? `${pagination.total} đơn hàng` : 'ĐÃ XÁC NHẬN Ở API'}</div>
+        <button
+            type="button"
+            className="button secondary"
+            onClick={handleExport}
+            disabled={exporting || loading}>
+            {exporting ? 'Đang xuất…' : 'Xuất Excel'}
+        </button>
+    </div><DataTable columns={[{ key: 'orderNumber', label: 'Mã đơn' }, { key: 'user', label: 'Khách hàng' }, { key: 'createdAt', label: 'Ngày đặt', type: 'date' }, { key: 'total', label: 'Tổng tiền', type: 'money' }, { key: 'paymentStatus', label: 'Thanh toán', type: 'status' }, { key: 'status', label: 'Trạng thái', type: 'status' }]} rows={items} loading={loading} error={error} onRetry={refresh} renderActions={row => <><button className="table-action" onClick={() => setDetailId(row._id)}>Chi tiết</button><select aria-label="Cập nhật trạng thái" className="mini-select" disabled={busyId === row._id} value={row.status} onChange={event => updateStatus(row._id, event.target.value)}>{[row.status, ...(next[row.status] || [])].map(value => <option key={value} value={value}>{orderStatusLabel[value] || value}</option>)}</select></>} />{pagination?.pages > 1 ? <div className="pagination"><span>Trang {page} / {pagination.pages}</span><div><button className="button secondary small-button" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>Trước</button><button className="button secondary small-button" disabled={page >= pagination.pages} onClick={() => setPage(value => value + 1)}>Sau</button></div></div> : null}</section>
     {detailId ? <OrderDetail id={detailId} onClose={() => setDetailId('')} onPaymentMarked={() => { setNotice('Đã xác nhận nhận chuyển khoản.'); refresh(); }} /> : null}
   </div>;
 }

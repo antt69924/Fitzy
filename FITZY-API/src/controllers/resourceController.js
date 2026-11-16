@@ -15,7 +15,7 @@ const { AppError, asyncHandler, pageResult } = require('../utils/errors');
 const definitions = {
   categories: { Model: Category, fields: ['name', 'description', 'image', 'status'], uniqueSlug: true },
   products: { Model: Product, fields: ['name', 'description', 'category', 'images', 'price', 'compareAtPrice', 'variants', 'status', 'featured', 'tags', 'salesCount'], uniqueSlug: true },
-  posts: { Model: Post, fields: ['title', 'excerpt', 'content', 'image', 'status', 'publishedAt'], slugField: 'title', uniqueSlug: true },
+  posts: { Model: Post, fields: ['title', 'excerpt', 'content', 'image', 'badge', 'category', 'readTime', 'author', 'tags', 'isEditorialPick', 'spotlightImages', 'relatedProducts', 'status', 'publishedAt'], slugField: 'title', uniqueSlug: true },
   promotions: { Model: Promotion, fields: ['code', 'discountType', 'discountValue', 'minimumOrder', 'maximumDiscount', 'startsAt', 'endsAt', 'usageLimit', 'active'] }
 };
 
@@ -35,6 +35,9 @@ function adminList(kind) {
     }
     if (kind === 'products' && req.query.category) {
       if (!mongoose.isValidObjectId(req.query.category)) throw new AppError('Invalid category', 400, 'INVALID_CATEGORY');
+      filter.category = req.query.category;
+    }
+    if (kind === 'posts' && req.query.category) {
       filter.category = req.query.category;
     }
     let query = Model.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit);
@@ -218,13 +221,35 @@ const productActivity = asyncHandler(async (req, res) => {
 const publicCategories = asyncHandler(async (req, res) => res.json({ success: true, data: { items: await Category.find({ status: 'active' }).sort({ name: 1 }) } }));
 const publicPosts = asyncHandler(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1); const limit = Math.min(30, Number(req.query.limit) || 10); const filter = { status: 'published', publishedAt: { $lte: new Date() } };
-  const [items, total] = await Promise.all([Post.find(filter).sort({ publishedAt: -1 }).skip((page - 1) * limit).limit(limit), Post.countDocuments(filter)]);
+  if (req.query.category && req.query.category !== 'Tất cả bài viết' && req.query.category !== 'all') {
+    filter.category = req.query.category;
+  }
+  if (req.query.q) {
+    const pattern = { $regex: String(req.query.q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    filter.$or = [{ title: pattern }, { excerpt: pattern }, { tags: pattern }];
+  }
+  const [items, total] = await Promise.all([
+    Post.find(filter)
+      .populate({ path: 'relatedProducts', select: 'name slug price compareAtPrice images category' })
+      .sort({ isEditorialPick: -1, publishedAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Post.countDocuments(filter)
+  ]);
   res.json({ success: true, data: pageResult(items, total, page, limit) });
 });
 const publicPostDetail = asyncHandler(async (req, res) => {
-  const item = await Post.findOne({ slug: req.params.slug, status: 'published', publishedAt: { $lte: new Date() } });
-  if (!item) throw new AppError('Article not found', 404, 'NOT_FOUND');
-  res.json({ success: true, data: { item } });
+    const item = await Post.findOneAndUpdate(
+        { slug: req.params.slug, status: 'published', publishedAt: { $lte: new Date() } },
+        { $inc: { viewsCount: 1 } },
+        { new: true }
+    ).populate({
+        path: 'relatedProducts',
+        match: { status: 'active' },
+        select: 'name slug price compareAtPrice images category'
+    });
+    if (!item) throw new AppError('Article not found', 404, 'NOT_FOUND');
+    res.json({ success: true, data: { item } });
 });
 
 const favoritesList = asyncHandler(async (req, res) => res.json({ success: true, data: { items: await Favorite.find({ user: req.user.id }).populate({ path: 'product', match: { status: 'active', category: { $in: await Category.activeIds() } }, populate: { path: 'category', select: 'name slug' } }) } }));
@@ -486,6 +511,233 @@ const adminOrders = asyncHandler(async (req, res) => {
   const [items, total] = await Promise.all([Order.find(filter).populate('user', 'name email phone').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit), Order.countDocuments(filter)]);
   res.json({ success: true, data: pageResult(items, total, page, limit) });
 });
+const exportOrdersExcel = asyncHandler(async (req, res) => {
+  const ExcelJS = require('exceljs');
+  const filter = {};
+
+  if (req.query.status && req.query.status !== 'all') {
+    filter.status = req.query.status;
+  } else if (!req.query.status) {
+
+    filter.status = { $ne: 'cancelled' };
+  }
+
+  if (req.query.from || req.query.to) {
+    filter.createdAt = {
+      ...(req.query.from ? { $gte: vietnamDateBoundary(req.query.from) } : {}),
+      ...(req.query.to ? { $lt: vietnamDateBoundary(req.query.to, true) } : {})
+    };
+  }
+
+  const query = String(req.query.q || '').trim().slice(0, 100);
+  if (query) {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matchingUsers = await User.find({
+      $or: [
+        { name: { $regex: escaped, $options: 'i' } },
+        { email: { $regex: escaped, $options: 'i' } },
+        { phone: { $regex: escaped, $options: 'i' } }
+      ]
+    }).distinct('_id');
+    filter.$or = [{ orderNumber: { $regex: escaped, $options: 'i' } }, { user: { $in: matchingUsers } }];
+  }
+
+  const orders = await Order.find(filter)
+    .populate('user', 'name email phone')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'FITZY Fashion Store';
+  workbook.lastModifiedBy = req.user?.name || 'Admin';
+  workbook.created = new Date();
+
+  const worksheet = workbook.addWorksheet('Danh sách đơn hàng', {
+    views: [{ showGridLines: true }]
+  });
+
+  worksheet.columns = [
+    { header: 'Mã đơn hàng', key: 'orderNumber', width: 20 },
+    { header: 'Ngày đặt', key: 'createdAt', width: 22 },
+    { header: 'Khách hàng', key: 'customerName', width: 24 },
+    { header: 'Email', key: 'customerEmail', width: 28 },
+    { header: 'Số điện thoại', key: 'customerPhone', width: 16 },
+    { header: 'Địa chỉ nhận hàng', key: 'shippingAddress', width: 42 },
+    { header: 'Chi tiết sản phẩm', key: 'productDetails', width: 46 },
+    { header: 'Tạm tính (VND)', key: 'subtotal', width: 18 },
+    { header: 'Giảm giá (VND)', key: 'discount', width: 16 },
+    { header: 'Phí ship (VND)', key: 'shippingFee', width: 16 },
+    { header: 'Tổng cộng (VND)', key: 'total', width: 20 },
+    { header: 'Phương thức TT', key: 'paymentMethod', width: 26 },
+    { header: 'Trạng thái TT', key: 'paymentStatus', width: 22 },
+    { header: 'Trạng thái đơn hàng', key: 'status', width: 22 }
+  ];
+
+  const headerRow = worksheet.getRow(1);
+  headerRow.height = 30;
+  headerRow.eachCell(cell => {
+    cell.font = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF20211F' }
+    };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF333333' } },
+      left: { style: 'thin', color: { argb: 'FF333333' } },
+      bottom: { style: 'medium', color: { argb: 'FF111111' } },
+      right: { style: 'thin', color: { argb: 'FF333333' } }
+    };
+  });
+
+  const paymentLabels = {
+    cod: 'Thanh toán khi nhận hàng (COD)',
+    bank_transfer: 'Chuyển khoản ngân hàng',
+    momo: 'Ví MoMo',
+    zalopay: 'Ví ZaloPay',
+    vnpay: 'Cổng VNPAY'
+  };
+
+  const paymentStatusLabels = {
+    unpaid: 'Chưa thanh toán',
+    pending: 'Đang chờ thanh toán',
+    paid: 'Đã thanh toán',
+    failed: 'Thanh toán thất bại',
+    refunded: 'Đã hoàn tiền',
+    expired: 'Quá hạn thanh toán'
+  };
+
+  const orderStatusLabels = {
+    pending: 'Chờ xác nhận',
+    confirmed: 'Đã xác nhận',
+    preparing: 'Đang chuẩn bị hàng',
+    shipping: 'Đang giao hàng',
+    completed: 'Đã giao hàng',
+    delivery_failed: 'Giao hàng thất bại',
+    cancelled: 'Đã hủy'
+  };
+
+  const pad = n => String(n).padStart(2, '0');
+
+  orders.forEach((order, index) => {
+    let phone = String(order.shipping?.phone || order.user?.phone || '').trim().replace(/[\s.-]/g, '');
+    if (phone.startsWith('+84')) phone = '0' + phone.slice(3);
+    if (phone && !phone.startsWith('0') && phone.length >= 9) phone = '0' + phone;
+
+    const d = new Date(order.createdAt);
+    const dateStr = !Number.isNaN(d.getTime())
+      ? `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+      : '—';
+
+    const fullAddress = [
+      order.shipping?.recipient,
+      order.shipping?.phone,
+      order.shipping?.line1,
+      order.shipping?.ward,
+      order.shipping?.district,
+      order.shipping?.city
+    ].filter(Boolean).join(', ') || '—';
+
+    const productDetails = (order.items || [])
+      .map(item => `${item.name} (${item.size} - ${item.color}) x ${item.quantity}`)
+      .join('\n') || '—';
+
+    const row = worksheet.addRow({
+      orderNumber: order.orderNumber,
+      createdAt: dateStr,
+      customerName: order.user?.name || order.shipping?.recipient || 'Khách vãng lai',
+      customerEmail: order.user?.email || '—',
+      customerPhone: phone || '—',
+      shippingAddress: fullAddress,
+      productDetails,
+      subtotal: Number(order.subtotal) || 0,
+      discount: Number(order.discount) || 0,
+      shippingFee: Number(order.shippingFee) || 0,
+      total: Number(order.total) || 0,
+      paymentMethod: paymentLabels[order.paymentMethod] || order.paymentMethod || '—',
+      paymentStatus: paymentStatusLabels[order.paymentStatus] || order.paymentStatus || '—',
+      status: orderStatusLabels[order.status] || order.status || '—'
+    });
+
+    const isEven = index % 2 === 0;
+    const bgArgb = isEven ? 'FFFFFFFF' : 'FFF9F9F8';
+
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.font = { name: 'Segoe UI', size: 10 };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: bgArgb }
+      };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFE6E6E6' } },
+        left: { style: 'thin', color: { argb: 'FFE6E6E6' } },
+        bottom: { style: 'thin', color: { argb: 'FFE6E6E6' } },
+        right: { style: 'thin', color: { argb: 'FFE6E6E6' } }
+      };
+
+      if ([1, 2, 5].includes(colNumber)) {
+        cell.numFmt = '@';
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if ([8, 9, 10, 11].includes(colNumber)) {
+        cell.numFmt = '#,##0';
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        if (colNumber === 11) cell.font = { name: 'Segoe UI', size: 10, bold: true };
+      } else if ([6, 7].includes(colNumber)) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      }
+    });
+  });
+
+  const summaryRowIndex = orders.length + 2;
+  const summaryRow = worksheet.addRow({
+    orderNumber: `TỔNG CỘNG (${orders.length} đơn hàng)`,
+    subtotal: { formula: orders.length ? `SUM(H2:H${summaryRowIndex - 1})` : '0' },
+    discount: { formula: orders.length ? `SUM(I2:I${summaryRowIndex - 1})` : '0' },
+    shippingFee: { formula: orders.length ? `SUM(J2:J${summaryRowIndex - 1})` : '0' },
+    total: { formula: orders.length ? `SUM(K2:K${summaryRowIndex - 1})` : '0' }
+  });
+
+  summaryRow.height = 26;
+  worksheet.mergeCells(`A${summaryRowIndex}:G${summaryRowIndex}`);
+
+  summaryRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    cell.font = { name: 'Segoe UI', size: 10, bold: true };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFF0EFEA' }
+    };
+    cell.border = {
+      top: { style: 'medium', color: { argb: 'FF20211F' } },
+      bottom: { style: 'double', color: { argb: 'FF20211F' } },
+      left: { style: 'thin', color: { argb: 'FFD0D0CE' } },
+      right: { style: 'thin', color: { argb: 'FFD0D0CE' } }
+    };
+
+    if (colNumber === 1) {
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    } else if ([8, 9, 10, 11].includes(colNumber)) {
+      cell.numFmt = '#,##0';
+      cell.alignment = { vertical: 'middle', horizontal: 'right' };
+      if (colNumber === 11) {
+        cell.font = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FFA84943' } };
+      }
+    }
+  });
+
+  const timestamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="Don_hang_FITZY_${timestamp}.xlsx"`);
+  res.setHeader('Cache-Control', 'no-cache');
+
+  await workbook.xlsx.write(res);
+  res.end();
+});
+
 const changeAdminOrderStatus = asyncHandler(async (req, res) => {
   const order = await Order.findById(req.params.id); if (!order) throw new AppError('Order not found', 404, 'NOT_FOUND');
   res.json({ success: true, data: { order: await orderService.changeOrderStatus(order, req.body.status, req.body.note) } });
@@ -504,4 +756,4 @@ const stats = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { revenue: revenue[0]?.total || 0, orderCount: orders, customerCount: customers, productCount: products, chart: daily, topProducts } });
 });
 
-module.exports = { definitions, adminList, adminCreate, adminUpdate, adminDelete, productActivity, publicCategories, publicPosts, publicPostDetail, favoritesList, favoriteAdd, favoriteRemove, createReview, ownReviewUpdate, ownReviewDelete, adminReviews, moderateReview, replyReview, customers, customerDetail, blockCustomer, adminOrders, changeAdminOrderStatus, stats };
+module.exports = { definitions, adminList, adminCreate, adminUpdate, adminDelete, productActivity, publicCategories, publicPosts, publicPostDetail, favoritesList, favoriteAdd, favoriteRemove, createReview, ownReviewUpdate, ownReviewDelete, adminReviews, moderateReview, replyReview, customers, customerDetail, blockCustomer, adminOrders, exportOrdersExcel, changeAdminOrderStatus, stats };

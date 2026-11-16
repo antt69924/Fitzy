@@ -6,7 +6,7 @@ import api from '../../services/api';
 import { cancelOrder } from '../../store/slices/orderSlice';
 import { addItems } from '../../store/slices/cartSlice';
 import { Button, Page, StateMessage } from '../../components/ui';
-import { theme, formatVnd } from '../../constants/theme';
+import { theme, formatVnd, resolveImageUrl } from '../../constants/theme';
 
 const steps = [
   { key: 'pending', label: 'Chờ xác nhận', description: 'Cửa hàng đang tiếp nhận đơn hàng.' },
@@ -133,7 +133,7 @@ export default function OrderDetailScreen({ route, navigation }) {
 
     <View style={{ backgroundColor: '#fff', borderRadius: 18, padding: 17, gap: 15 }}>
       <Text style={{ color: theme.colors.ink, fontSize: 17, fontWeight: '800' }}>Trạng thái đơn hàng</Text>
-      {isCancelled ? <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}><View style={{ height: 28, width: 28, borderRadius: 14, backgroundColor: '#fae9e7', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: theme.colors.danger, fontWeight: '800' }}>×</Text></View><View style={{ flex: 1, gap: 4 }}><Text style={{ color: theme.colors.danger, fontWeight: '800' }}>Đơn hàng đã hủy</Text><Text style={{ color: theme.colors.muted, lineHeight: 19 }}>{lastStatusEvent('cancelled')?.at ? `Hủy lúc ${formatDateTime(lastStatusEvent('cancelled').at)}` : 'Đơn hàng này đã được hủy.'}</Text>{lastStatusEvent('cancelled')?.note ? <Text style={{ color: theme.colors.muted, lineHeight: 19 }}>{lastStatusEvent('cancelled').note}</Text> : null}</View></View> : steps.map((step, index) => {
+      {isCancelled ? <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}><View style={{ height: 28, width: 28, borderRadius: 14, backgroundColor: '#fae9e7', alignItems: 'center', justifyContent: 'center' }}><Text style={{ color: theme.colors.danger, fontWeight: '800' }}>×</Text></View><View style={{ flex: 1, gap: 4 }}><Text style={{ color: theme.colors.danger, fontWeight: '800' }}>{order.paymentStatus === 'expired' ? 'Đơn hàng đã hủy (Quá hạn thanh toán)' : 'Đơn hàng đã hủy'}</Text><Text style={{ color: theme.colors.muted, lineHeight: 19 }}>{lastStatusEvent('cancelled')?.at ? `Hủy lúc ${formatDateTime(lastStatusEvent('cancelled').at)}` : 'Đơn hàng này đã được hủy.'}</Text>{lastStatusEvent('cancelled')?.note ? <Text style={{ color: theme.colors.muted, lineHeight: 19 }}>{lastStatusEvent('cancelled').note}</Text> : null}</View></View> : steps.map((step, index) => {
         const reached = index <= currentStep;
         const active = index === currentStep;
         const event = lastStatusEvent(step.key);
@@ -150,7 +150,7 @@ export default function OrderDetailScreen({ route, navigation }) {
       <Text style={{ color: theme.colors.ink, fontSize: 17, fontWeight: '800' }}>Sản phẩm ({order.items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0)})</Text>
       {!order.items.length ? <Text style={{ color: theme.colors.muted }}>Đơn hàng không có dữ liệu sản phẩm.</Text> : null}
       {order.items.map((item, index) => <View key={`${item.variantId}-${index}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 11 }}>
-        {item.image ? <Image source={{ uri: item.image }} style={{ width: 62, height: 76, borderRadius: 11, backgroundColor: theme.colors.sand }} /> : <View style={{ width: 62, height: 76, borderRadius: 11, backgroundColor: theme.colors.sand }} />}
+        {item.image ? <Image source={{ uri: resolveImageUrl(item.image) }} style={{ width: 62, height: 76, borderRadius: 11, backgroundColor: theme.colors.sand }} /> : <View style={{ width: 62, height: 76, borderRadius: 11, backgroundColor: theme.colors.sand }} />}
         <View style={{ flex: 1, gap: 5 }}><Text style={{ color: theme.colors.ink, fontWeight: '700' }}>{item.name}</Text><Text style={{ color: theme.colors.muted, fontSize: 12 }}>Size {item.size} · {item.color} · SL {item.quantity}</Text><Text style={{ color: theme.colors.ink }}>{formatVnd(item.unitPrice)}</Text></View>
         <Text style={{ color: theme.colors.ink, fontWeight: '700' }}>{formatVnd(item.unitPrice * item.quantity)}</Text>
       </View>)}
