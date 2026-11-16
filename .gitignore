@@ -13,3 +13,12 @@ FITZY-API/uploads/*
 *.log
 .idea/
 docs/GEMINI.md
+
+# ECC (Everything Claude Code / Agent Harness)
+.agents/
+.claude/
+.cursor/
+.codex/
+.ecc/
+ecc-install-state.json
+

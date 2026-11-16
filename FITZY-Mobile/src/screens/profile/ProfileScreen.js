@@ -111,6 +111,16 @@ export default function ProfileScreen({ navigation }) {
   const [name, setName] = useState(user?.name || '');
   const [phone, setPhone] = useState(user?.phone || '');
   const [editModalVisible, setEditModalVisible] = useState(false);
+  const [addressModalVisible, setAddressModalVisible] = useState(false);
+  const [newAddrModalVisible, setNewAddrModalVisible] = useState(false);
+  const [addrRecipient, setAddrRecipient] = useState('');
+  const [addrPhone, setAddrPhone] = useState('');
+  const [addrLine1, setAddrLine1] = useState('');
+  const [addrWard, setAddrWard] = useState('');
+  const [addrDistrict, setAddrDistrict] = useState('');
+  const [addrCity, setAddrCity] = useState('');
+  const [addrLabel, setAddrLabel] = useState('Nhà riêng');
+  const [addrIsDefault, setAddrIsDefault] = useState(false);
 
   // Switches
   const [pushNotifications, setPushNotifications] = useState(true);
@@ -119,6 +129,8 @@ export default function ProfileScreen({ navigation }) {
   useEffect(() => {
     setName(user?.name || '');
     setPhone(user?.phone || '');
+    setAddrRecipient(user?.name || '');
+    setAddrPhone(user?.phone || '');
   }, [user?._id, user?.name, user?.phone]);
 
   const activeOrdersCount = orders.filter(
@@ -139,6 +151,57 @@ export default function ProfileScreen({ navigation }) {
       `${featureName} đang được phát triển và sẽ sớm ra mắt trong bản cập nhật tới.`,
       [{ text: 'Đã hiểu' }]
     );
+  };
+
+  const deleteAddress = addressId => {
+    Alert.alert('Xóa địa chỉ', 'Bạn có chắc chắn muốn xóa địa chỉ này khỏi danh bạ?', [
+      { text: 'Hủy', style: 'cancel' },
+      {
+        text: 'Xóa',
+        style: 'destructive',
+        onPress: () => {
+          const remaining = (user?.addresses || []).filter(a => a._id !== addressId);
+          dispatch(updateProfile({ addresses: remaining }));
+        }
+      }
+    ]);
+  };
+
+  const setDefaultAddress = addressId => {
+    const updated = (user?.addresses || []).map(a => ({
+      ...a,
+      isDefault: a._id === addressId
+    }));
+    dispatch(updateProfile({ addresses: updated }));
+  };
+
+  const saveNewAddress = async () => {
+    if (!addrRecipient.trim() || !addrPhone.trim() || !addrLine1.trim() || !addrDistrict.trim() || !addrCity.trim()) {
+      return Alert.alert('Lỗi', 'Vui lòng điền đầy đủ họ tên, số điện thoại và địa chỉ nhận hàng.');
+    }
+    const newAddr = {
+      label: addrLabel,
+      recipient: addrRecipient.trim(),
+      phone: addrPhone.trim(),
+      line1: addrLine1.trim(),
+      ward: addrWard.trim(),
+      district: addrDistrict.trim(),
+      city: addrCity.trim(),
+      isDefault: addrIsDefault || (user?.addresses || []).length === 0
+    };
+    const currentList = user?.addresses || [];
+    const nextList = newAddr.isDefault
+      ? [...currentList.map(a => ({ ...a, isDefault: false })), newAddr]
+      : [...currentList, newAddr];
+    const res = await dispatch(updateProfile({ addresses: nextList }));
+    if (updateProfile.fulfilled.match(res)) {
+      setNewAddrModalVisible(false);
+      setAddrLine1('');
+      setAddrWard('');
+      setAddrDistrict('');
+      setAddrCity('');
+      Alert.alert('Thành công', 'Đã lưu địa chỉ mới vào danh bạ.');
+    }
   };
 
   const save = async () => {
@@ -280,7 +343,7 @@ export default function ProfileScreen({ navigation }) {
             icon="location-outline"
             title="Địa chỉ nhận hàng"
             value={`${addressCount} địa chỉ`}
-            onPress={() => showUpcomingFeature('Địa chỉ nhận hàng')}
+            onPress={() => (user ? setAddressModalVisible(true) : navigation.navigate('Auth'))}
           />
           <SettingsItem
             icon="ticket-outline"
@@ -460,6 +523,280 @@ export default function ProfileScreen({ navigation }) {
                 )}
               </Pressable>
             </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Modal Quản lý Sổ địa chỉ */}
+      <Modal
+        visible={addressModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setAddressModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Sổ địa chỉ nhận hàng</Text>
+              <Pressable
+                onPress={() => setAddressModalVisible(false)}
+                hitSlop={10}
+                style={styles.modalCloseBtn}
+              >
+                <Ionicons name="close" size={20} color="#181818" />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 16 }}>
+              {(user?.addresses || []).length === 0 ? (
+                <View style={{ padding: 24, alignItems: 'center', gap: 6 }}>
+                  <Text style={{ color: theme.colors.muted, fontSize: 14 }}>Chưa có địa chỉ nào được lưu.</Text>
+                  <Text style={{ color: theme.colors.muted, fontSize: 12, textAlign: 'center' }}>
+                    Thêm địa chỉ nhận hàng để thanh toán nhanh hơn chỉ với 1 chạm.
+                  </Text>
+                </View>
+              ) : (
+                (user?.addresses || []).map((addr, idx) => (
+                  <View
+                    key={addr._id || idx}
+                    style={{
+                      padding: 14,
+                      backgroundColor: '#fbfaf8',
+                      borderRadius: 14,
+                      borderWidth: 1,
+                      borderColor: addr.isDefault ? theme.colors.ink : theme.colors.line,
+                      gap: 6
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                        <Text style={{ color: theme.colors.ink, fontWeight: '700', fontSize: 15 }}>
+                          {addr.recipient}
+                        </Text>
+                        <Text style={{ color: theme.colors.muted, fontSize: 13 }}>
+                          · {addr.phone}
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        {addr.label ? (
+                          <View style={{ backgroundColor: theme.colors.sand, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}>
+                            <Text style={{ color: theme.colors.ink, fontSize: 11, fontWeight: '600' }}>
+                              {addr.label}
+                            </Text>
+                          </View>
+                        ) : null}
+                        {addr.isDefault ? (
+                          <View style={{ backgroundColor: '#f0ece1', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 }}>
+                            <Text style={{ color: theme.colors.accent, fontSize: 11, fontWeight: '700' }}>
+                              Mặc định
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                    <Text style={{ color: theme.colors.muted, fontSize: 13, lineHeight: 18 }}>
+                      {[addr.line1, addr.ward, addr.district, addr.city].filter(Boolean).join(', ')}
+                    </Text>
+
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 4, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#f0ece1' }}>
+                      {!addr.isDefault ? (
+                        <Pressable onPress={() => setDefaultAddress(addr._id)}>
+                          <Text style={{ color: theme.colors.accent, fontSize: 13, fontWeight: '600' }}>
+                            Đặt làm mặc định
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                      <Pressable onPress={() => deleteAddress(addr._id)}>
+                        <Text style={{ color: '#dc2626', fontSize: 13, fontWeight: '600' }}>
+                          Xóa
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              )}
+
+              <Pressable
+                onPress={() => {
+                  setNewAddrModalVisible(true);
+                  setAddrRecipient(user?.name || '');
+                  setAddrPhone(user?.phone || '');
+                  setAddrLine1('');
+                  setAddrWard('');
+                  setAddrDistrict('');
+                  setAddrCity('');
+                  setAddrLabel('Nhà riêng');
+                  setAddrIsDefault((user?.addresses || []).length === 0);
+                }}
+                style={{
+                  height: 48,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: theme.colors.ink,
+                  borderStyle: 'dashed',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginTop: 6
+                }}
+              >
+                <Text style={{ color: theme.colors.ink, fontWeight: '700', fontSize: 14 }}>
+                  + THÊM ĐỊA CHỈ MỚI
+                </Text>
+              </Pressable>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Thêm địa chỉ mới */}
+      <Modal
+        visible={newAddrModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setNewAddrModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { maxHeight: '90%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Thêm địa chỉ nhận hàng</Text>
+              <Pressable
+                onPress={() => setNewAddrModalVisible(false)}
+                hitSlop={10}
+                style={styles.modalCloseBtn}
+              >
+                <Ionicons name="close" size={20} color="#181818" />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 20 }}>
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                <Text style={{ color: theme.colors.muted, fontSize: 12, fontWeight: '600' }}>Loại địa chỉ:</Text>
+                {['Nhà riêng', 'Văn phòng', 'Khác'].map(item => (
+                  <Pressable
+                    key={item}
+                    onPress={() => setAddrLabel(item)}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 5,
+                      borderRadius: 8,
+                      backgroundColor: addrLabel === item ? theme.colors.ink : '#fff',
+                      borderWidth: 1,
+                      borderColor: addrLabel === item ? theme.colors.ink : theme.colors.line
+                    }}
+                  >
+                    <Text style={{ color: addrLabel === item ? '#fff' : theme.colors.ink, fontSize: 12, fontWeight: '600' }}>
+                      {item}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              <View style={styles.modalFieldGroup}>
+                <Text style={styles.modalFieldLabel}>Người nhận *</Text>
+                <View style={styles.modalInputBox}>
+                  <TextInput
+                    value={addrRecipient}
+                    onChangeText={setAddrRecipient}
+                    placeholder="Họ và tên người nhận"
+                    placeholderTextColor="#aaa69f"
+                    style={styles.modalTextInput}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.modalFieldGroup}>
+                <Text style={styles.modalFieldLabel}>Số điện thoại *</Text>
+                <View style={styles.modalInputBox}>
+                  <TextInput
+                    value={addrPhone}
+                    onChangeText={setAddrPhone}
+                    placeholder="09xx xxx xxx"
+                    placeholderTextColor="#aaa69f"
+                    keyboardType="phone-pad"
+                    style={styles.modalTextInput}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.modalFieldGroup}>
+                <Text style={styles.modalFieldLabel}>Địa chỉ cụ thể *</Text>
+                <View style={styles.modalInputBox}>
+                  <TextInput
+                    value={addrLine1}
+                    onChangeText={setAddrLine1}
+                    placeholder="Số nhà, tên đường"
+                    placeholderTextColor="#aaa69f"
+                    style={styles.modalTextInput}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.modalFieldGroup}>
+                <Text style={styles.modalFieldLabel}>Phường / xã</Text>
+                <View style={styles.modalInputBox}>
+                  <TextInput
+                    value={addrWard}
+                    onChangeText={setAddrWard}
+                    placeholder="Phường / xã"
+                    placeholderTextColor="#aaa69f"
+                    style={styles.modalTextInput}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.modalFieldGroup}>
+                <Text style={styles.modalFieldLabel}>Quận / huyện *</Text>
+                <View style={styles.modalInputBox}>
+                  <TextInput
+                    value={addrDistrict}
+                    onChangeText={setAddrDistrict}
+                    placeholder="Quận / huyện"
+                    placeholderTextColor="#aaa69f"
+                    style={styles.modalTextInput}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.modalFieldGroup}>
+                <Text style={styles.modalFieldLabel}>Tỉnh / thành phố *</Text>
+                <View style={styles.modalInputBox}>
+                  <TextInput
+                    value={addrCity}
+                    onChangeText={setAddrCity}
+                    placeholder="Tỉnh / thành phố"
+                    placeholderTextColor="#aaa69f"
+                    style={styles.modalTextInput}
+                  />
+                </View>
+              </View>
+
+              <Pressable
+                onPress={() => setAddrIsDefault(v => !v)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }}
+              >
+                <Text style={{ fontSize: 18, color: addrIsDefault ? theme.colors.ink : theme.colors.muted }}>
+                  {addrIsDefault ? '☑' : '☐'}
+                </Text>
+                <Text style={{ color: theme.colors.ink, fontSize: 13, fontWeight: '500' }}>
+                  Đặt làm địa chỉ nhận hàng mặc định
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={saveNewAddress}
+                disabled={busy}
+                style={[styles.modalSaveBtn, busy && { opacity: 0.7 }]}
+              >
+                {busy ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text style={styles.modalSaveText}>LƯU ĐỊA CHỈ</Text>
+                )}
+              </Pressable>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>

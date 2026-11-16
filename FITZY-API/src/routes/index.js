@@ -57,6 +57,7 @@ router.patch('/orders/:id/payment/confirm', admin, [param('id').isMongoId()], va
 router.patch('/orders/:id/payment/refund', admin, [param('id').isMongoId()], validate, orderController.markRefunded);
 router.get('/orders', auth.requireAuth, orderController.mine);
 router.get('/orders/admin/list', admin, resources.adminOrders);
+router.get('/orders/admin/export', admin, resources.exportOrdersExcel);
 router.get('/orders/:id', auth.requireAuth, [param('id').isMongoId()], validate, orderController.detail);
 router.post('/orders/:id/cancel', auth.requireAuth, [param('id').isMongoId()], validate, orderController.cancel);
 router.post('/products/:productId/reviews', auth.requireAuth, [body('rating').isInt({ min: 1, max: 5 }), body('orderId').isMongoId(), body('comment').optional().isString().isLength({ max: 1200 })], validate, resources.createReview);
@@ -67,7 +68,7 @@ router.post('/favorites/:productId', auth.requireAuth, resources.favoriteAdd);
 router.delete('/favorites/:productId', auth.requireAuth, resources.favoriteRemove);
 
 router.post('/promotions/check', auth.requireAuth, [body('code').isString().trim().notEmpty(), body('items').isArray({ min: 1 })], validate, asyncHandler(async (req, res) => {
-  const code = req.body.code.toUpperCase(); const now = new Date();
+  const code = String(req.body.code || '').trim().toUpperCase(); const now = new Date();
   const promotion = await Promotion.findOne({ code, active: true, startsAt: { $lte: now }, endsAt: { $gte: now }, $or: [{ usageLimit: null }, { $expr: { $lt: ['$usedCount', '$usageLimit'] } }] });
   if (!promotion) return res.status(400).json({ success: false, error: { code: 'PROMOTION_INVALID', message: 'Promotion code is invalid or expired' } });
   let subtotal = 0; const activeCategories = await Category.activeIds();

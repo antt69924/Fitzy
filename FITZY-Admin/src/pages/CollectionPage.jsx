@@ -59,7 +59,21 @@ const resourceConfig = {
       { key: 'status', label: 'Trạng thái bài viết', kind: 'select', options: [['draft', 'Bản nháp'], ['published', 'Xuất bản']] }
     ]
   },
-  promotions: { singular: 'mã ưu đãi', path: '/admin/promotions', columns: [{ key: 'code', label: 'Mã' }, { key: 'discountType', label: 'Loại giảm' }, { key: 'discountValue', label: 'Giá trị', render: row => row.discountType === 'percent' ? `${row.discountValue}%` : money(row.discountValue) }, { key: 'usedCount', label: 'Đã dùng' }, { key: 'endsAt', label: 'Hết hạn', type: 'date' }, { key: 'active', label: 'Trạng thái' }], fields: [{ key: 'code', label: 'Mã khuyến mãi', required: true }, { key: 'discountType', label: 'Kiểu giảm', kind: 'select', options: [['percent', 'Phần trăm'], ['fixed', 'Số tiền cố định']] }, { key: 'discountValue', label: 'Giá trị giảm', type: 'number', required: true }, { key: 'minimumOrder', label: 'Đơn tối thiểu', type: 'number' }, { key: 'maximumDiscount', label: 'Giảm tối đa', type: 'number' }, { key: 'startsAt', label: 'Bắt đầu', type: 'datetime-local', required: true }, { key: 'endsAt', label: 'Kết thúc', type: 'datetime-local', required: true }, { key: 'usageLimit', label: 'Lượt sử dụng tối đa', type: 'number' }, { key: 'active', label: 'Đang kích hoạt', kind: 'checkbox' }] }
+  promotions: {
+      singular: 'mã ưu đãi', path: '/admin/promotions',
+      columns: [{ key: 'code', label: 'Mã' },
+                { key: 'discountType', label: 'Loại giảm' },
+                { key: 'discountValue', label: 'Giá trị', render: row => row.discountType === 'percent' ? `${row.discountValue}%` : money(row.discountValue) },
+                { key: 'usedCount', label: 'Đã dùng' }, { key: 'endsAt', label: 'Hết hạn', type: 'date' },
+                { key: 'active', label: 'Trạng thái', render: row => (
+                        <span className={`status-badge ${row.active ? 'active' : 'hidden'}`}>
+                        {row.active ? 'Đang bật' : 'Tắt'}
+                        </span>)}], fields: [{ key: 'code', label: 'Mã khuyến mãi', required: true },
+                { key: 'discountType', label: 'Kiểu giảm', kind: 'select', options: [['percent', 'Phần trăm'], ['fixed', 'Số tiền cố định']] },
+                { key: 'discountValue', label: 'Giá trị giảm', type: 'number', required: true }, { key: 'minimumOrder', label: 'Đơn tối thiểu', type: 'number' },
+                { key: 'maximumDiscount', label: 'Giảm tối đa', type: 'number' }, { key: 'startsAt', label: 'Bắt đầu', type: 'datetime-local', required: true },
+                { key: 'endsAt', label: 'Kết thúc', type: 'datetime-local', required: true }, { key: 'usageLimit', label: 'Lượt sử dụng tối đa', type: 'number' },
+                { key: 'active', label: 'Đang kích hoạt', kind: 'checkbox' }] }
 };
 
 const defaultVariant = () => ({ size: 'M', color: 'Đen', colorHex: '#222222', quantity: '0', sku: '', isActive: true });
