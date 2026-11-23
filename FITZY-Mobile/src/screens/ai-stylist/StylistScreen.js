@@ -466,6 +466,7 @@ export default function StylistScreen({ navigation }) {
             <TextInput
               value={notes}
               onChangeText={setNotes}
+              maxLength={300}
               placeholder="Ví dụ: Cần phối giày da nâu hoặc đi làm phòng máy lạnh..."
               placeholderTextColor="#a39f96"
               style={styles.cleanInput}
@@ -594,7 +595,7 @@ export default function StylistScreen({ navigation }) {
                   </Text>
                   <View style={styles.priceWithDiscountRow}>
                     <Text style={styles.totalPriceBold}>
-                      {formatVnd(answer.totalPrice || 1239000)}
+                      {formatVnd(answer.totalPrice)}
                     </Text>
                     {answer.totalCompareAtPrice &&
                     answer.totalCompareAtPrice > answer.totalPrice ? (

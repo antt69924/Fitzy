@@ -87,7 +87,7 @@ function initialDraft(config, row) {
     else if (field.kind === 'spotlightImages') result[field.key] = Array.isArray(value) ? [...value] : [];
     else if (field.kind === 'productTags') result[field.key] = Array.isArray(value) ? value.map(p => p._id || p) : [];
     else if (field.type === 'datetime-local') result[field.key] = dateForInput(value);
-    else result[field.key] = value ?? (field.kind === 'checkbox' ? field.key === 'active' : field.key === 'status' ? 'active' : '');
+    else result[field.key] = value ?? (field.kind === 'checkbox' ? field.key === 'active' : field.kind === 'select' ? field.options[0][0] : field.key === 'status' ? 'active' : '');
   });
   return result;
 }
