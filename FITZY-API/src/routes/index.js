@@ -24,7 +24,7 @@ const router = express.Router();
 const admin = [auth.requireAuth, auth.requireAdmin];
 const loginLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { success: false, error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again later.' } } });
 const firebaseExchangeLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false, message: { success: false, error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again later.' } } });
-const aiLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false });
+const aiLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { success: false, error: { code: 'RATE_LIMITED', message: 'Too many stylist requests. Try again later.' } } });
 
 router.get('/health', (req, res) => res.json({ success: true, data: { service: 'fitzy-api', status: 'ok' } }));
 router.get('/payments/methods', (req, res) => {
